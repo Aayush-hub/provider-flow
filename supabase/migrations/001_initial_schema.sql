@@ -1,4 +1,4 @@
--- SharedCred prototype schema. Run with Supabase CLI or the SQL editor.
+-- CertifyOS prototype schema. Run with Supabase CLI or the SQL editor.
 create extension if not exists pgcrypto;
 
 create type public.app_role as enum ('practitioner','provider_admin','reviewer');

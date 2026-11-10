@@ -1,5 +1,5 @@
-import SharedCredApp from "../sharedcred-app";
+import CertifyOSApp from "../sharedcred-app";
 
 export default function AppRoute() {
-  return <SharedCredApp />;
+  return <CertifyOSApp />;
 }

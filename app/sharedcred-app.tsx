@@ -19,6 +19,7 @@ import {
   Plus,
   Search,
   ShieldCheck,
+  Sparkles,
   Stethoscope,
   Upload,
   UsersRound,
@@ -166,7 +167,7 @@ function parsePath() {
   return { view: 'dashboard', id: '' };
 }
 
-export default function SharedCredApp() {
+export default function CertifyOSApp() {
   const [account, setAccount] = useState<AccountState>(emptyAccount),
     [supabase, setSupabase] = useState<ReturnType<typeof createClient> | null>(
       null,
@@ -299,7 +300,7 @@ export default function SharedCredApp() {
     });
     setWorkspaceLoaded(true);
     go(saved.practitioners.length ? 'dashboard' : 'new');
-    setToast('Welcome to your SharedCred workspace.');
+    setToast('Welcome to your CertifyOS workspace.');
     return null;
   }
   const practitioner = account.practitioners.find((p) => p.id === route.id);
@@ -316,7 +317,7 @@ export default function SharedCredApp() {
           <span className="brand-large">
             <ShieldCheck />
           </span>
-          <p>CertifyOS SharedCred</p>
+          <p>CertifyOS</p>
           <h1>Deployment configuration required.</h1>
           <p>
             The application was deployed successfully, but its Supabase public
@@ -420,71 +421,84 @@ function Auth({
   return (
     <main className="auth-page">
       <section className="auth-brand">
-        <span className="brand-large">
-          <ShieldCheck />
-        </span>
-        <p>CertifyOS SharedCred</p>
-        <h1>
-          One professional profile.
-          <br />
-          Every credentialing journey.
-        </h1>
-        <p>
-          Manage practitioners, complete applications, and follow every
-          organization’s progress from one calm workspace.
-        </p>
-        <small>
-          Independent concept prototype · Fictional organizations and simulated
-          credentialing outcomes
-        </small>
+        <div className="auth-brand-content">
+          <div className="auth-logo-lockup">
+            <span className="brand-large"><ShieldCheck /></span>
+            <span><b>CertifyOS</b><small>Provider Credentialing</small></span>
+          </div>
+          <div className="auth-promise">
+            <p className="eyebrow">Built for providers</p>
+            <h1>Credentialing without the paperwork maze.</h1>
+            <p>
+              One guided profile, clear next steps, and every application in a
+              single calm workspace.
+            </p>
+          </div>
+          <div className="auth-journey">
+            <div><span><Search size={17} /></span><b>Find your record</b><small>Start with only an NPI</small></div>
+            <i />
+            <div><span><Sparkles size={17} /></span><b>Complete what’s missing</b><small>We prefill what we can</small></div>
+            <i />
+            <div><span><CheckCircle2 size={17} /></span><b>Review and submit</b><small>One clear final check</small></div>
+          </div>
+          <div className="auth-trust-row">
+            <ShieldCheck size={16} />
+            <span><b>Private by design</b><small>Your progress saves securely as you go.</small></span>
+          </div>
+        </div>
       </section>
       <section className="auth-panel">
         <div className="auth-card">
-          <div className="brand-mobile">
-            <ShieldCheck size={20} />
-            <b>SharedCred</b>
+          <div className="brand-mobile auth-logo-lockup">
+            <span className="brand"><ShieldCheck size={19} /></span>
+            <span><b>CertifyOS</b><small>Provider Credentialing</small></span>
           </div>
-          <p className="eyebrow">
-            {signup ? 'Create your workspace' : 'Welcome back'}
-          </p>
-          <h2>{signup ? 'Get started' : 'Sign in to SharedCred'}</h2>
-          <p className="description text-xs">
-            {signup
-              ? 'Add your first practitioner in the next step.'
-              : 'Continue managing practitioner applications.'}
-          </p>
+          <div className="auth-card-head">
+            <span className="beta-pill">Provider beta</span>
+            <p className="eyebrow">{signup ? 'Create your account' : 'Welcome back'}</p>
+            <h2>{signup ? 'Your easier application starts here' : 'Continue where you left off'}</h2>
+            <p>
+              {signup
+                ? 'No email verification. Create your account and begin with an NPI.'
+                : 'Sign in to continue your saved applications and credentialing progress.'}
+            </p>
+          </div>
           <form onSubmit={submit}>
             {signup && (
               <Field label="Full name">
                 <input
-                  className="input w-full"
+                  className="input auth-input w-full"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   autoComplete="name"
+                  placeholder="Your full legal name"
                   required
                 />
               </Field>
             )}
             <Field label="Email">
               <input
-                className="input w-full"
+                className="input auth-input w-full"
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 autoComplete="email"
+                placeholder="you@example.com"
                 required
               />
             </Field>
             <Field label="Password">
               <input
-                className="input w-full"
+                className="input auth-input w-full"
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 autoComplete={signup ? 'new-password' : 'current-password'}
+                placeholder={signup ? 'At least 8 characters' : 'Enter your password'}
                 minLength={8}
                 required
               />
+              {signup && <small className="password-hint"><ShieldCheck size={13} /> Use 8 or more characters</small>}
             </Field>
             {error && (
               <div className="error">
@@ -493,23 +507,23 @@ function Auth({
               </div>
             )}
             <button
-              className="primary-button w-full"
+              className="primary-button auth-submit w-full"
               type="submit"
               disabled={busy}
             >
               {busy && <LoaderCircle size={14} className="animate-spin" />}
-              {signup ? 'Create account' : 'Sign in'}
+              {signup ? 'Create my account' : 'Sign in securely'}
               <ArrowRight size={14} />
             </button>
           </form>
           <p className="auth-switch">
-            {signup ? 'Already have an account?' : 'New to SharedCred?'}{' '}
+            {signup ? 'Already have an account?' : 'New to CertifyOS?'}{' '}
             <button onClick={() => go(signup ? 'login' : 'signup')}>
               {signup ? 'Sign in' : 'Create account'}
             </button>
           </p>
           <p className="demo-note">
-            Secure authentication and sessions are provided by Supabase.
+            <CheckCircle2 size={14} /> Your progress is saved automatically.
           </p>
         </div>
       </section>
@@ -535,7 +549,7 @@ function Header({
           </span>
           <span>
             <b>CertifyOS</b>
-            <small>SharedCred</small>
+            <small>Provider Portal</small>
           </span>
         </button>
         <nav>
@@ -608,7 +622,7 @@ function Dashboard({
         <span>
           <Stethoscope />
         </span>
-        <p className="eyebrow">Welcome to SharedCred</p>
+        <p className="eyebrow">Welcome to CertifyOS</p>
         <h1>Add your first practitioner</h1>
         <p>
           We’ll find available professional information and help you complete
@@ -762,263 +776,6 @@ function PractitionerRow({
         <ChevronRight size={14} />
       </span>
     </button>
-  );
-}
-
-export function LegacyNewPractitioner({
-  account,
-  setAccount,
-  go,
-  notify,
-}: {
-  account: AccountState;
-  setAccount: React.Dispatch<React.SetStateAction<AccountState>>;
-  go: (v: string, id?: string) => void;
-  notify: (s: string) => void;
-}) {
-  const [npi, setNpi] = useState('1003000126'),
-    [lookup, setLookup] = useState<PractitionerLookup>(),
-    [busy, setBusy] = useState(false),
-    [error, setError] = useState(''),
-    [first, setFirst] = useState(''),
-    [last, setLast] = useState(''),
-    [email, setEmail] = useState(''),
-    [caqh, setCaqh] = useState(''),
-    [selected, setSelected] = useState<string[]>(['northstar']);
-  async function find() {
-    setError('');
-    if (!isValidNpi(npi)) {
-      setError('Enter a valid 10-digit individual NPI.');
-      return;
-    }
-    if (account.practitioners.some((p) => p.practitioner?.npi === npi)) {
-      setError(
-        'This practitioner is already in your workspace. Open the existing record instead.',
-      );
-      return;
-    }
-    setBusy(true);
-    try {
-      const r = await fetch(`/api/npi/${npi}`),
-        body = (await r.json()) as PractitionerLookup | { error: string };
-      if (!r.ok || 'error' in body)
-        throw new Error('error' in body ? body.error : 'Lookup failed');
-      setLookup(body);
-      setFirst(body.firstName);
-      setLast(body.lastName);
-    } catch (x) {
-      setError(x instanceof Error ? x.message : 'Lookup failed');
-    } finally {
-      setBusy(false);
-    }
-  }
-  function create(e: React.FormEvent) {
-    e.preventDefault();
-    if (!lookup) {
-      setError('Find and confirm the public NPI record first.');
-      return;
-    }
-    if (!selected.length) {
-      setError('Select at least one organization.');
-      return;
-    }
-    const loc = lookup.addresses.find((a) => a.purpose === 'LOCATION'),
-      cms = lookup.cms.facts.rows[0],
-      id = uid();
-    const p: ManagedPractitioner = {
-      id,
-      role: 'provider',
-      practitioner: lookup,
-      contactEmail: email,
-      caqhId: caqh,
-      selectedOrganizations: selected,
-      profile: {
-        ...blankProfile,
-        degree: canonicalDegree(lookup.credential ?? '') ?? '',
-        practiceAddress: loc
-          ? `${loc.line1}, ${loc.city}, ${loc.state} ${loc.postalCode}`
-          : '',
-        education: cms?.medicalSchool ?? '',
-        graduationYear: cms?.graduationYear ?? '',
-      },
-      documents: [],
-      attested: false,
-      cases: [],
-      audit: [{ action: 'Practitioner added from public NPI data', at: now() }],
-      createdAt: now(),
-      updatedAt: now(),
-    };
-    setAccount((a) => ({ ...a, practitioners: [...a.practitioners, p] }));
-    notify('Practitioner added. We found the information already available.');
-    go('onboarding', id);
-  }
-  return (
-    <>
-      <Breadcrumb
-        items={[
-          { label: 'Dashboard', onClick: () => go('dashboard') },
-          { label: 'Add Practitioner' },
-        ]}
-      />
-      <PageTitle
-        title="Add Practitioner"
-        description="Start with an NPI. We’ll bring in available public information before asking for anything else."
-      />
-      <form onSubmit={create} className="add-layout">
-        <div className="space-y-5">
-          <section className="surface form-section">
-            <div className="section-number">1</div>
-            <div className="section-content">
-              <h2>Practitioner information</h2>
-              <p>
-                Public lookup does not establish identity or grant access to
-                private data.
-              </p>
-              <Field label="National Provider Identifier (NPI)">
-                <div className="npi-field">
-                  <input
-                    className="input"
-                    value={npi}
-                    onChange={(e) => setNpi(e.target.value.replace(/\D/g, ''))}
-                    maxLength={10}
-                  />
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    onClick={find}
-                    disabled={busy}
-                  >
-                    {busy ? (
-                      <LoaderCircle className="animate-spin" size={14} />
-                    ) : (
-                      <Search size={14} />
-                    )}
-                    Find practitioner
-                  </button>
-                </div>
-              </Field>
-              {error && (
-                <div className="error">
-                  <AlertCircle size={14} />
-                  {error}
-                </div>
-              )}
-              {lookup && (
-                <div className="lookup-result">
-                  <span>
-                    <CheckCircle2 />
-                  </span>
-                  <div>
-                    <small>Public record found</small>
-                    <h3>
-                      {lookup.firstName} {lookup.lastName}, {lookup.credential}
-                    </h3>
-                    <p>
-                      {lookup.taxonomies.find((t) => t.primary)?.description ??
-                        'Specialty not publicly reported'}{' '}
-                      ·{' '}
-                      {
-                        lookup.addresses.find((a) => a.purpose === 'LOCATION')
-                          ?.city
-                      }
-                      ,{' '}
-                      {
-                        lookup.addresses.find((a) => a.purpose === 'LOCATION')
-                          ?.state
-                      }
-                    </p>
-                    <b>NPI {lookup.npi}</b>
-                  </div>
-                </div>
-              )}
-              <div className="form-grid">
-                <Field label="First name">
-                  <input
-                    className="input w-full"
-                    value={first}
-                    onChange={(e) => setFirst(e.target.value)}
-                    required
-                  />
-                </Field>
-                <Field label="Last name">
-                  <input
-                    className="input w-full"
-                    value={last}
-                    onChange={(e) => setLast(e.target.value)}
-                    required
-                  />
-                </Field>
-                <Field label="Contact email">
-                  <input
-                    className="input w-full"
-                    type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    required
-                  />
-                </Field>
-                <Field label="CAQH ID (optional)">
-                  <input
-                    className="input w-full"
-                    value={caqh}
-                    onChange={(e) => setCaqh(e.target.value)}
-                    placeholder="Enter if available"
-                  />
-                </Field>
-              </div>
-            </div>
-          </section>
-          <section className="surface form-section">
-            <div className="section-number">2</div>
-            <div className="section-content">
-              <h2>Select organizations</h2>
-              <p>Choose one or more fictional demonstration organizations.</p>
-              <div className="new-orgs">
-                {organizations.map((o) => {
-                  const on = selected.includes(o.id);
-                  return (
-                    <button
-                      type="button"
-                      key={o.id}
-                      className={on ? 'selected' : ''}
-                      onClick={() =>
-                        setSelected((s) =>
-                          on ? s.filter((x) => x !== o.id) : [...s, o.id],
-                        )
-                      }
-                    >
-                      <i>{on && <Check size={13} />}</i>
-                      <span>
-                        <b>{o.name}</b>
-                        <small>{o.subtitle}</small>
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          </section>
-        </div>
-        <aside className="add-summary surface">
-          <h3>What happens next</h3>
-          <ol>
-            <li>
-              <span>1</span>We save the public facts and their sources.
-            </li>
-            <li>
-              <span>2</span>SharedCred combines the selected requirements.
-            </li>
-            <li>
-              <span>3</span>You complete only the missing information.
-            </li>
-          </ol>
-          <button className="primary-button w-full" type="submit">
-            Add Practitioner & Continue
-            <ArrowRight size={14} />
-          </button>
-        </aside>
-      </form>
-    </>
   );
 }
 
@@ -1539,6 +1296,22 @@ function Workspace({
           )}
         </div>
       </div>
+      {!p.submittedAt && (
+        <div className="workspace-progress-strip">
+          <div>
+            <span><Sparkles size={15} /> Application progress</span>
+            <b>{pct}%</b>
+          </div>
+          <div className="workspace-progress-track">
+            <i style={{ width: `${pct}%` }} />
+          </div>
+          <p>
+            {missing.length
+              ? `${missing.length} item${missing.length === 1 ? '' : 's'} left — your work saves automatically.`
+              : 'Everything is complete. Review and submit when you’re ready.'}
+          </p>
+        </div>
+      )}
       <nav className="workspace-tabs">
         {[
           ['overview', 'Overview'],
@@ -1888,8 +1661,11 @@ function Onboarding({
               {p.practitioner?.lastName}’s profile
             </h2>
             <p>
-              We found professional information already. Review the prefilled
-              values and complete the remaining requirements.
+              {pct < 50
+                ? 'We already found part of the profile. Review each short section and fill only what is missing.'
+                : pct < 100
+                  ? 'Great progress. A few focused sections remain before the final review.'
+                  : 'Profile complete. Continue to one final review and attestation.'}
             </p>
           </div>
           <span>

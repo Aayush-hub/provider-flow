@@ -13,7 +13,7 @@ async function fetchJson(url: string, attempts = 2): Promise<Response> {
   let lastError: unknown;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      const response = await fetch(url, { headers: { Accept: "application/json", "User-Agent": "SharedCred-Prototype/1.0" }, signal: AbortSignal.timeout(9000), next: { revalidate: 3600 } });
+      const response = await fetch(url, { headers: { Accept: "application/json", "User-Agent": "CertifyOS-Provider-Portal/1.0" }, signal: AbortSignal.timeout(9000), next: { revalidate: 3600 } });
       if (response.ok || response.status < 500) return response;
       lastError = new Error(`Upstream returned ${response.status}`);
     } catch (error) { lastError = error; }
@@ -30,7 +30,7 @@ export async function GET(_request: Request, context: { params: Promise<{ npi: s
     const payload = await nppesResponse.json() as { result_count?: number; results?: NppesResult[]; Errors?: Array<{ description?: string }> };
     if (!payload.result_count || !payload.results?.[0]) return NextResponse.json({ error: payload.Errors?.[0]?.description ?? "No public NPI record was found." }, { status: 404 });
     const record = payload.results[0];
-    if (record.enumeration_type !== "NPI-1") return NextResponse.json({ error: "This is a Type 2 organization NPI. SharedCred onboarding currently supports individual practitioners (Type 1).", kind: "type_2" }, { status: 422 });
+    if (record.enumeration_type !== "NPI-1") return NextResponse.json({ error: "This is a Type 2 organization NPI. CertifyOS onboarding currently supports individual practitioners (Type 1).", kind: "type_2" }, { status: 422 });
     const addresses: Address[] = (record.addresses ?? []).map((item) => ({ purpose: item.address_purpose ?? "LOCATION", line1: item.address_1 ?? "", line2: item.address_2, city: item.city ?? "", state: item.state ?? "", postalCode: formatPostalCode(item.postal_code), phone: item.telephone_number }));
     const taxonomies: Taxonomy[] = (record.taxonomies ?? []).map((item) => ({ code: item.code ?? "", description: item.desc ?? "", primary: Boolean(item.primary), state: item.state, license: item.license }));
     let cmsRows: ClinicianAffiliation[] = [];

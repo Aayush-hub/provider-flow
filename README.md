@@ -1,4 +1,4 @@
-# SharedCred — Smart Provider Onboarding
+# CertifyOS — Smart Provider Onboarding
 
 An independent, production-shaped concept prototype for provider onboarding and credentialing. It is not an official CertifyOS implementation and must not be used for real credentialing decisions.
 

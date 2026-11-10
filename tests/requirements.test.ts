@@ -4,7 +4,7 @@ import type { DemoState } from "../lib/domain";
 
 const state: DemoState = { role:"provider", selectedOrganizations:["northstar","evergreen","horizon"], profile:{degree:"MD",licenseState:"CA",licenseNumber:"A123",practiceAddress:"1 Demo St",education:"Demo University",graduationYear:"2010",malpracticeCarrier:"",hospitalAffiliation:"",disclosure:""}, documents:[], attested:false, cases:[], audit:[], practitioner: undefined };
 
-describe("SharedCred requirement engine", () => {
+describe("CertifyOS requirement engine", () => {
   it("maps approved degree equivalents deterministically", () => {
     expect(canonicalDegree("M.D.")).toBe("MD");
     expect(canonicalDegree("Doctor of Medicine")).toBe("MD");

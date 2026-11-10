@@ -2,8 +2,8 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'SharedCred | Smart Provider Onboarding',
-  description: 'A transparent, multi-organization provider onboarding and credentialing prototype.',
+  title: 'CertifyOS | Provider Credentialing Made Simple',
+  description: 'A guided provider onboarding and credentialing workspace designed for fast, complete applications.',
 };
 
 export default function RootLayout({

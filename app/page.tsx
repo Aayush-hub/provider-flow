@@ -1,3 +1,3 @@
-import SharedCredApp from "./sharedcred-app";
+import CertifyOSApp from "./sharedcred-app";
 
-export default function Home() { return <SharedCredApp />; }
+export default function Home() { return <CertifyOSApp />; }
