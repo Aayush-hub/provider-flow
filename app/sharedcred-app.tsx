@@ -33,7 +33,10 @@ import {
   type ManagedPractitioner,
   type PractitionerLookup,
 } from '@/lib/domain';
-import { createClient } from '@/lib/supabase/client';
+import {
+  createClient,
+  isSupabaseConfigured,
+} from '@/lib/supabase/client';
 
 const emptyAccount: AccountState = {
   authenticated: false,
@@ -145,8 +148,6 @@ const hospitals = [
 ];
 const uid = () => crypto.randomUUID(),
   now = () => new Date().toISOString();
-const supabase = createClient();
-
 function pathFor(view: string, id?: string) {
   if (view === 'login' || view === 'signup') return `/${view}`;
   if (view === 'new') return '/practitioners/new';
@@ -167,6 +168,10 @@ function parsePath() {
 
 export default function SharedCredApp() {
   const [account, setAccount] = useState<AccountState>(emptyAccount),
+    [supabase, setSupabase] = useState<ReturnType<typeof createClient> | null>(
+      null,
+    ),
+    [configurationError, setConfigurationError] = useState(false),
     [ready, setReady] = useState(false),
     [workspaceLoaded, setWorkspaceLoaded] = useState(false),
     [route, setRoute] = useState({ view: 'dashboard', id: '' }),
@@ -177,8 +182,16 @@ export default function SharedCredApp() {
     setRoute(current);
     const pop = () => setRoute(parsePath());
     addEventListener('popstate', pop);
+    if (!isSupabaseConfigured()) {
+      setConfigurationError(true);
+      setWorkspaceLoaded(true);
+      setReady(true);
+      return () => removeEventListener('popstate', pop);
+    }
+    const client = createClient();
+    setSupabase(client);
     void (async () => {
-      const { data } = await supabase.auth.getUser();
+      const { data } = await client.auth.getUser();
       if (!active) return;
       if (data.user) {
         const response = await fetch('/api/workspace', { cache: 'no-store' });
@@ -260,6 +273,8 @@ export default function SharedCredApp() {
     email: string,
     password: string,
   ) {
+    if (!supabase)
+      return 'Supabase is not configured for this deployment yet.';
     const result =
       mode === 'signup'
         ? await supabase.auth.signUp({
@@ -295,6 +310,33 @@ export default function SharedCredApp() {
         <LoaderCircle className="animate-spin text-[var(--teal)]" />
       </div>
     );
+  if (configurationError)
+    return (
+      <main className="auth-page">
+        <section className="auth-brand">
+          <span className="brand-large">
+            <ShieldCheck />
+          </span>
+          <p>CertifyOS SharedCred</p>
+          <h1>Deployment configuration required.</h1>
+          <p>
+            The application was deployed successfully, but its Supabase public
+            environment variables have not been added to this environment.
+          </p>
+        </section>
+        <section className="auth-panel">
+          <div className="auth-card">
+            <p className="eyebrow">Administrator action required</p>
+            <h2>Connect this deployment to Supabase</h2>
+            <p className="description">
+              Add <code>NEXT_PUBLIC_SUPABASE_URL</code> and{' '}
+              <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code> in Vercel Environment
+              Variables, then redeploy.
+            </p>
+          </div>
+        </section>
+      </main>
+    );
   if (
     !account.authenticated ||
     route.view === 'login' ||
@@ -314,7 +356,7 @@ export default function SharedCredApp() {
         account={account}
         go={go}
         logout={async () => {
-          await supabase.auth.signOut();
+          await supabase?.auth.signOut();
           setWorkspaceLoaded(false);
           setAccount(emptyAccount);
           go('login');
