@@ -30,12 +30,12 @@ An accepted information response moves the case to verification. Invalid shortcu
 
 The SQL migration defines normalized PostgreSQL tables, indexes, foreign keys, private Storage, and RLS. Practitioner facts and documents require explicit access. Case reads allow the practitioner relationship or a reviewer membership for that exact organization. Reviewer updates are organization-scoped. Provider-visible events are separated from internal notes.
 
-The browser-backed demo is deliberately synthetic and local. It exercises state transitions without pretending to be production persistence. The Supabase schema is the intended deployed source of truth.
+The deployed application uses Supabase Auth for identity and a private Supabase Storage bucket for each user's workspace snapshot. The normalized Supabase PostgreSQL schema remains available for teams that want a relational rollout.
 
 ## Limitations
 
 - No real CAQH, NPDB, state board, payer, e-signature, or identity-proofing integration.
-- Document upload in zero-config mode records metadata only; Supabase Storage is required for bytes.
+- Document uploads store the file bytes in private Supabase Storage and retain the returned object path in workspace state.
 - Document extraction/OCR is not enabled. Manual entry is the fallback.
 - Credentialing outcomes and organizations are fictional and simulated.
 - Recredentialing tables and preserved-history model are present; the current UI focuses on the higher-priority initial lifecycle.

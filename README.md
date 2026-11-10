@@ -8,27 +8,27 @@ An independent, production-shaped concept prototype for provider onboarding and 
 - Independent CMS Doctors & Clinicians enrichment. A blocked or unavailable CMS source never discards successful NPPES data.
 - Canonical degree mappings and dynamic, multi-organization gap evaluation.
 - Adaptive provider action inbox, document metadata capture, application review, demonstration attestation, and immutable-snapshot semantics.
-- Independent credentialing cases, reviewer/provider role switching, valid state transitions, additional-information request/response/acceptance, decisions, timelines, and audit history.
-- Supabase PostgreSQL schema, private Storage bucket, tenant-aware RLS policies, seed data, and unit tests.
+- Independent provider-facing credentialing simulations, additional-information request/response flows, decisions, timelines, and audit history.
+- Supabase email/password authentication, cookie-based SSR sessions, private workspace persistence, private document uploads, PostgreSQL schema, RLS policies, seed data, and unit tests.
 
-The zero-configuration local demonstration persists synthetic workflow state in browser storage so the product can be exercised immediately. The included Supabase migration is the production persistence contract; connect the server repository before handling non-demo data. Uploaded bytes are intentionally not retained in zero-config mode.
+Authenticated workspace state and uploaded demonstration documents are persisted in the private `sharedcred-private` Supabase Storage bucket. Every server operation resolves the cookie-backed Supabase user before accessing the user-specific object path. The included normalized PostgreSQL migration remains the target model for a full relational rollout.
 
 ## Local setup
 
 ```bash
 npm install
-cp .env.example .env.local
+# Populate .env.local from the sanitized .env.example keys.
 npm run dev
 ```
 
 Open `http://localhost:3000`. The default valid NPI is only a convenience for testing the public API. Do not attach synthetic private histories to it.
 
-To enable Supabase:
+Supabase setup:
 
-1. Create a Supabase project.
-2. Run `supabase/migrations/001_initial_schema.sql`, then `supabase/seed.sql`.
-3. Add the project URL and anon key to `.env.local`.
-4. Create provider and reviewer users in Supabase Auth, then assign explicit access and organization memberships. Never grant private access because an entered NPI matches.
+1. Add the project URL, anon/publishable key, and server-only service-role key to `.env.local`.
+2. Create a private Storage bucket named `sharedcred-private` with a 10 MB limit for JSON, PDF, DOCX, PNG, and JPG files.
+3. For the normalized relational model, run `supabase/migrations/001_initial_schema.sql`, then `supabase/seed.sql` in the Supabase SQL editor.
+4. Add `http://localhost:3000/auth/callback` and the production Vercel callback URL to Supabase Auth redirect URLs.
 
 ## Verification
 
@@ -41,8 +41,18 @@ npm run build
 
 ## Deployment
 
-This repository was initialized with the OpenAI Sites Next-compatible runtime and can be published with Sites. For a conventional Vercel deployment, use the same App Router source in a current stable Next.js application, retain `app`, `lib`, `public`, `supabase`, and documentation, add the Supabase environment variables in Vercel, and deploy. Server route `/api/npi/[npi]` requires outbound HTTPS to `npiregistry.cms.hhs.gov` and `data.cms.gov`.
+This is a standard Next.js 16 App Router project and deploys to Vercel with zero framework configuration:
 
-Do not expose `SUPABASE_SERVICE_ROLE_KEY` to client code. Configure Supabase Auth redirect URLs for the production origin and keep `credentialing-documents` private.
+1. Import the repository into Vercel.
+2. Add `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, and `NEXT_PUBLIC_APP_URL` to Production and Preview environments.
+3. Set `NEXT_PUBLIC_APP_URL` to the production Vercel origin.
+4. Add `https://YOUR-VERCEL-DOMAIN/auth/callback` to Supabase Auth redirect URLs.
+5. Deploy. The build command is `npm run build`; output detection is automatic.
+
+The NPI route requires outbound HTTPS to `npiregistry.cms.hhs.gov` and `data.cms.gov`.
+
+Do not expose `SUPABASE_SERVICE_ROLE_KEY` to client code. It is used only by authenticated server routes for explicitly user-scoped private Storage paths.
+
+Security note: the configured values were moved from the ignored local `.env.example` into the ignored `.env.local`; the committed `.env.example` now contains placeholders only. Rotate the service-role key if the original file was ever shared outside this machine.
 
 See [DEMO_GUIDE.md](DEMO_GUIDE.md) and [ARCHITECTURE.md](ARCHITECTURE.md).

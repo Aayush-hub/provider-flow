@@ -15,6 +15,6 @@
 - [x] Audit history
 - [x] Supabase schema, private Storage, seed, and RLS
 - [x] Unit tests and production build
-- [ ] Wire UI repository operations to a configured Supabase project
+- [x] Wire authentication, workspace persistence, and document uploads to the configured Supabase project
 - [ ] Optional PDF/DOCX extraction and OCR provider
 - [ ] Full recredentialing UI (schema and history model included)

@@ -19,7 +19,7 @@ export interface CredentialingCase { id: string; organizationId: string; status:
 export interface DemoState {
   role: "provider" | "reviewer"; practitioner?: PractitionerLookup; selectedOrganizations: string[];
   profile: { degree: string; licenseState: string; licenseNumber: string; practiceAddress: string; education: string; graduationYear: string; malpracticeCarrier: string; hospitalAffiliation: string; disclosure: string };
-  documents: { id: string; name: string; type: string; status: string }[]; attested: boolean; submittedAt?: string; cases: CredentialingCase[]; audit: { action: string; at: string }[];
+  documents: { id: string; name: string; type: string; status: string; storagePath?: string; size?: number }[]; attested: boolean; submittedAt?: string; cases: CredentialingCase[]; audit: { action: string; at: string }[];
 }
 
 export interface ManagedPractitioner extends DemoState {

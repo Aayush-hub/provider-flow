@@ -42,4 +42,4 @@ Select **Reset demo** in the sidebar to clear device-local synthetic state.
 | CAQH, state licensing, NPDB | Not connected; never labeled live |
 | Credentialing review and decisions | Working lifecycle, explicitly simulated |
 | Identity proofing / e-signature | Not implemented; demonstration acknowledgement only |
-| Document bytes | Private Supabase Storage when configured; metadata-only in zero-config demo |
+| Document bytes | Private Supabase Storage, scoped to the authenticated user |
