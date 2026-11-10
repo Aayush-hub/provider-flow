@@ -1467,22 +1467,6 @@ function Workspace({
           )}
         </div>
       </div>
-      {!p.submittedAt && (
-        <div className="workspace-progress-strip">
-          <div>
-            <span><Sparkles size={15} /> Application progress</span>
-            <b>{pct}%</b>
-          </div>
-          <div className="workspace-progress-track">
-            <i style={{ width: `${pct}%` }} />
-          </div>
-          <p>
-            {missing.length
-              ? `${missing.length} item${missing.length === 1 ? '' : 's'} left — your work saves automatically.`
-              : 'Everything is complete. Review and submit when you’re ready.'}
-          </p>
-        </div>
-      )}
       <nav className="workspace-tabs">
         {[
           ['overview', 'Overview'],
@@ -1691,6 +1675,7 @@ function Overview({
               })}
           </div>
         </section>
+        {organizations.some((o) => !p.selectedOrganizations.includes(o.id)) && (
         <section id="add-org" className="surface panel">
           <div className="panel-head">
             <div>
@@ -1701,27 +1686,26 @@ function Overview({
             </div>
           </div>
           <div className="inline-orgs">
-            {organizations.map((o) => {
-              const on = p.selectedOrganizations.includes(o.id);
+            {organizations
+              .filter((o) => !p.selectedOrganizations.includes(o.id))
+              .map((o) => {
               return (
                 <button
-                  disabled={on}
                   onClick={() => toggleOrg(o.id)}
                   key={o.id}
                 >
                   <Building2 size={15} />
                   <span>
                     <b>{o.name}</b>
-                    <small>
-                      {on ? 'Already added' : 'Add without restarting'}
-                    </small>
+                    <small>Add without restarting</small>
                   </span>
-                  {!on && <Plus size={14} />}
+                  <Plus size={14} />
                 </button>
               );
             })}
           </div>
         </section>
+        )}
       </div>
       <aside className="space-y-5">
         <section className="surface panel">
