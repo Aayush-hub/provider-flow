@@ -22,6 +22,21 @@ export interface DemoState {
   documents: { id: string; name: string; type: string; status: string }[]; attested: boolean; submittedAt?: string; cases: CredentialingCase[]; audit: { action: string; at: string }[];
 }
 
+export interface ManagedPractitioner extends DemoState {
+  id: string;
+  contactEmail: string;
+  caqhId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AccountState {
+  authenticated: boolean;
+  user: { fullName: string; email: string } | null;
+  practitioners: ManagedPractitioner[];
+  notifications: string[];
+}
+
 export const organizations = [
   { id: "northstar", name: "Northstar Health Network", subtitle: "Core profile + work history", accent: "#287a78" },
   { id: "evergreen", name: "Evergreen Medical Group", subtitle: "Affiliations + malpractice", accent: "#47724d" },
