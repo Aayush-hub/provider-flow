@@ -45,21 +45,28 @@ import {
   canonicalDegree,
   evaluateRequirements,
   isOnboardingSectionComplete,
+  onboardingSectionForRequirement,
   onboardingSections,
   type OnboardingSection,
 } from '@/lib/requirements';
 import { isValidNpi } from '@/lib/npi';
+import { conflictsFromLookup } from '@/lib/acquisition';
 import {
+  historiesFor,
+  normalizePractitioner,
   organizations,
+  pendingOrganizationIds,
+  submittedOrganizationIds,
   type AccountState,
+  type AffiliationHistory,
   type CaseStatus,
   type ManagedPractitioner,
+  type PracticeHistory,
   type PractitionerLookup,
+  type ProviderHistories,
 } from '@/lib/domain';
-import {
-  createClient,
-  isSupabaseConfigured,
-} from '@/lib/supabase/client';
+import { createClient, isSupabaseConfigured } from '@/lib/supabase/client';
+import { createIncrementalSubmission } from '@/lib/submissions';
 
 const emptyAccount: AccountState = {
   authenticated: false,
@@ -67,6 +74,12 @@ const emptyAccount: AccountState = {
   practitioners: [],
   notifications: [],
 };
+function normalizeAccount(account: AccountState): AccountState {
+  return {
+    ...account,
+    practitioners: account.practitioners.map(normalizePractitioner),
+  };
+}
 const blankProfile = {
   degree: '',
   licenseState: '',
@@ -169,23 +182,52 @@ const hospitals = [
   'Independent / No affiliation',
   'Other / Not listed',
 ];
+type Navigate = (
+  view: string,
+  id?: string,
+  section?: OnboardingSection,
+) => void;
+const onboardingSectionNames = new Set<OnboardingSection>([
+  'Resolve conflicts',
+  'Professional details',
+  'Education',
+  'License',
+  'Practice',
+  'Documents',
+  'Affiliations',
+  'Coverage',
+  'Disclosures',
+]);
+function parseOnboardingSection(value: string | null) {
+  return value && onboardingSectionNames.has(value as OnboardingSection)
+    ? (value as OnboardingSection)
+    : undefined;
+}
 const uid = () => crypto.randomUUID(),
   now = () => new Date().toISOString();
-function pathFor(view: string, id?: string) {
+function pathFor(view: string, id?: string, section?: OnboardingSection) {
   if (view === 'login' || view === 'signup') return `/${view}`;
   if (view === 'new') return '/practitioners/new';
   if (view === 'dashboard') return '/dashboard';
-  if (id) return `/practitioners/${id}${view === 'overview' ? '' : `/${view}`}`;
+  if (id) {
+    const path = `/practitioners/${id}${view === 'overview' ? '' : `/${view}`}`;
+    return view === 'onboarding' && section
+      ? `${path}?section=${encodeURIComponent(section)}`
+      : path;
+  }
   return '/dashboard';
 }
 function parsePath() {
   const parts = location.pathname.split('/').filter(Boolean);
+  const section = parseOnboardingSection(
+    new URLSearchParams(location.search).get('section'),
+  );
   if (parts[0] === 'login' || parts[0] === 'signup')
     return { view: parts[0], id: '' };
   if (parts[0] === 'practitioners' && parts[1] === 'new')
     return { view: 'new', id: '' };
   if (parts[0] === 'practitioners' && parts[1])
-    return { view: parts[2] || 'overview', id: parts[1] };
+    return { view: parts[2] || 'overview', id: parts[1], section };
   return { view: 'dashboard', id: '' };
 }
 
@@ -197,7 +239,11 @@ export default function CertifyOSApp() {
     [configurationError, setConfigurationError] = useState(false),
     [ready, setReady] = useState(false),
     [workspaceLoaded, setWorkspaceLoaded] = useState(false),
-    [route, setRoute] = useState({ view: 'dashboard', id: '' }),
+    [route, setRoute] = useState<{
+      view: string;
+      id: string;
+      section?: OnboardingSection;
+    }>({ view: 'dashboard', id: '' }),
     [toast, setToast] = useState('');
   useEffect(() => {
     let active = true;
@@ -220,7 +266,8 @@ export default function CertifyOSApp() {
         const response = await fetch('/api/workspace', { cache: 'no-store' });
         if (response.ok) {
           const saved = (await response.json()) as AccountState;
-          if (active) setAccount({ ...saved, authenticated: true });
+          if (active)
+            setAccount(normalizeAccount({ ...saved, authenticated: true }));
         } else if (active)
           setAccount({
             authenticated: true,
@@ -278,10 +325,10 @@ export default function CertifyOSApp() {
       return () => clearTimeout(t);
     }
   }, [toast]);
-  function go(view: string, id = '') {
-    const path = pathFor(view, id);
+  function go(view: string, id = '', section?: OnboardingSection) {
+    const path = pathFor(view, id, section);
     history.pushState({}, '', path);
-    setRoute({ view, id });
+    setRoute({ view, id, section });
     scrollTo({ top: 0, behavior: 'smooth' });
   }
   function savePractitioner(next: ManagedPractitioner) {
@@ -320,8 +367,7 @@ export default function CertifyOSApp() {
     email: string,
     password: string,
   ) {
-    if (!supabase)
-      return 'Supabase is not configured for this deployment yet.';
+    if (!supabase) return 'Supabase is not configured for this deployment yet.';
     if (mode === 'signup') {
       const signupResponse = await fetch('/api/auth/signup', {
         method: 'POST',
@@ -339,11 +385,13 @@ export default function CertifyOSApp() {
     const saved = response.ok
       ? ((await response.json()) as AccountState)
       : { ...emptyAccount, authenticated: true, user: { fullName, email } };
-    setAccount({
-      ...saved,
-      authenticated: true,
-      user: { fullName: saved.user?.fullName ?? fullName, email },
-    });
+    setAccount(
+      normalizeAccount({
+        ...saved,
+        authenticated: true,
+        user: { fullName: saved.user?.fullName ?? fullName, email },
+      }),
+    );
     setWorkspaceLoaded(true);
     go(saved.practitioners.length ? 'dashboard' : 'new');
     setToast('Welcome to your CertifyOS workspace.');
@@ -428,6 +476,7 @@ export default function CertifyOSApp() {
           <Workspace
             practitioner={practitioner}
             view={route.view}
+            onboardingSection={route.section}
             save={savePractitioner}
             go={go}
             notify={setToast}
@@ -475,8 +524,13 @@ function Auth({
       <section className="auth-brand">
         <div className="auth-brand-content">
           <div className="auth-logo-lockup">
-            <span className="brand-large"><ShieldCheck /></span>
-            <span><b>CertifyOS</b><small>Provider Credentialing</small></span>
+            <span className="brand-large">
+              <ShieldCheck />
+            </span>
+            <span>
+              <b>CertifyOS</b>
+              <small>Provider Credentialing</small>
+            </span>
           </div>
           <div className="auth-promise">
             <p className="eyebrow">Built for providers</p>
@@ -487,28 +541,60 @@ function Auth({
             </p>
           </div>
           <div className="auth-journey">
-            <div><span><Search size={17} /></span><b>Find your record</b><small>Start with only an NPI</small></div>
+            <div>
+              <span>
+                <Search size={17} />
+              </span>
+              <b>Find your record</b>
+              <small>Start with only an NPI</small>
+            </div>
             <i />
-            <div><span><Sparkles size={17} /></span><b>Complete what’s missing</b><small>We prefill what we can</small></div>
+            <div>
+              <span>
+                <Sparkles size={17} />
+              </span>
+              <b>Complete what’s missing</b>
+              <small>We prefill what we can</small>
+            </div>
             <i />
-            <div><span><CheckCircle2 size={17} /></span><b>Review and submit</b><small>One clear final check</small></div>
+            <div>
+              <span>
+                <CheckCircle2 size={17} />
+              </span>
+              <b>Review and submit</b>
+              <small>One clear final check</small>
+            </div>
           </div>
           <div className="auth-trust-row">
             <ShieldCheck size={16} />
-            <span><b>Private by design</b><small>Your progress saves securely as you go.</small></span>
+            <span>
+              <b>Private by design</b>
+              <small>Your progress saves securely as you go.</small>
+            </span>
           </div>
         </div>
       </section>
       <section className="auth-panel">
         <div className="auth-card">
           <div className="brand-mobile auth-logo-lockup">
-            <span className="brand"><ShieldCheck size={19} /></span>
-            <span><b>CertifyOS</b><small>Provider Credentialing</small></span>
+            <span className="brand">
+              <ShieldCheck size={19} />
+            </span>
+            <span>
+              <b>CertifyOS</b>
+              <small>Provider Credentialing</small>
+            </span>
           </div>
           <div className="auth-card-head">
             <span className="beta-pill">Provider beta</span>
-            <p className="eyebrow">{signup ? 'Create your account' : 'Welcome back'}</p>
-            <h2>{signup ? 'Your easier application starts here' : 'Continue where you left off'}</h2>
+            <p className="eyebrow">
+              {signup ? 'Create your account' : 'Welcome back'}
+            </p>
+            <h2>
+              {signup
+                ? 'Your easier application starts here'
+                : 'Continue where you left off'}
+            </h2>
             <p>
               {signup
                 ? 'No email verification. Create your account and begin with an NPI.'
@@ -546,11 +632,17 @@ function Auth({
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 autoComplete={signup ? 'new-password' : 'current-password'}
-                placeholder={signup ? 'At least 8 characters' : 'Enter your password'}
+                placeholder={
+                  signup ? 'At least 8 characters' : 'Enter your password'
+                }
                 minLength={8}
                 required
               />
-              {signup && <small className="password-hint"><ShieldCheck size={13} /> Use 8 or more characters</small>}
+              {signup && (
+                <small className="password-hint">
+                  <ShieldCheck size={13} /> Use 8 or more characters
+                </small>
+              )}
             </Field>
             {error && (
               <div className="error">
@@ -589,7 +681,7 @@ function Header({
   logout,
 }: {
   account: AccountState;
-  go: (v: string, id?: string) => void;
+  go: Navigate;
   logout: () => void | Promise<void>;
 }) {
   return (
@@ -659,14 +751,16 @@ function Dashboard({
         filter === 'all' ||
         (filter === 'action' &&
           p.cases.some((c) => c.status === 'information_requested')) ||
-        (filter === 'in_progress' && !p.submittedAt) ||
+        (filter === 'in_progress' && pendingOrganizationIds(p).length > 0) ||
         (filter === 'credentialing' &&
           p.cases.some((c) => !['approved', 'denied'].includes(c.status))),
     );
   const action = account.practitioners.filter((p) =>
       p.cases.some((c) => c.status === 'information_requested'),
     ).length,
-    inProgress = account.practitioners.filter((p) => !p.submittedAt).length,
+    inProgress = account.practitioners.filter(
+      (p) => pendingOrganizationIds(p).length > 0,
+    ).length,
     credentialing = account.practitioners.filter((p) =>
       p.cases.some((c) => !['approved', 'denied'].includes(c.status)),
     ).length;
@@ -805,7 +899,10 @@ function Metric({
       aria-label={`${label}: ${value}. Filter dashboard`}
     >
       <span className="metric-icon">{icon}</span>
-      <span className="metric-copy"><b>{value}</b><span>{label}</span></span>
+      <span className="metric-copy">
+        <b>{value}</b>
+        <span>{label}</span>
+      </span>
     </button>
   );
 }
@@ -818,7 +915,13 @@ function PractitionerRow({
   go: (v: string, id?: string) => void;
   deletePractitioner: (p: ManagedPractitioner) => Promise<boolean>;
 }) {
-  const req = evaluateRequirements(p),
+  const pendingOrganizations = pendingOrganizationIds(p),
+    req = evaluateRequirements(
+      p,
+      pendingOrganizations.length
+        ? pendingOrganizations
+        : p.selectedOrganizations,
+    ),
     pct = req.length
       ? Math.round((req.filter((x) => x.satisfied).length / req.length) * 100)
       : 0,
@@ -832,52 +935,58 @@ function PractitionerRow({
         onClick={() => go('overview', p.id)}
       >
         <span className="person">
-        <i>
-          {p.practitioner?.firstName[0]}
-          {p.practitioner?.lastName[0]}
-        </i>
-        <span>
-          <b>
-            {p.practitioner?.firstName} {p.practitioner?.lastName},{' '}
-            {p.profile.degree || p.practitioner?.credential}
-          </b>
-          <small>NPI {p.practitioner?.npi}</small>
+          <i>
+            {p.practitioner?.firstName[0]}
+            {p.practitioner?.lastName[0]}
+          </i>
+          <span>
+            <b>
+              {p.practitioner?.firstName} {p.practitioner?.lastName},{' '}
+              {p.profile.degree || p.practitioner?.credential}
+            </b>
+            <small>NPI {p.practitioner?.npi}</small>
+          </span>
         </span>
-      </span>
         <span>{p.selectedOrganizations.length}</span>
         <span>
-        <Status
-          text={
-            p.submittedAt
-              ? 'Submitted'
-              : pct === 100
-                ? 'Ready for review'
-                : `${pct}% complete`
-          }
-          tone={p.submittedAt || pct === 100 ? 'green' : 'red'}
-        />
+          <Status
+            text={
+              pendingOrganizations.length
+                ? pct === 100
+                  ? 'Ready for review'
+                  : `${pct}% complete`
+                : p.submittedAt
+                  ? 'Submitted'
+                  : pct === 100
+                    ? 'Ready for review'
+                    : `${pct}% complete`
+            }
+            tone={!pendingOrganizations.length || pct === 100 ? 'green' : 'red'}
+          />
         </span>
         <span>
-        <Status
-          text={
-            action
-              ? 'Action required'
-              : active
-                ? 'In progress'
-                : p.cases.length
-                  ? 'Complete (Simulation)'
-                  : 'Not started'
-          }
-          tone={action ? 'red' : active ? 'blue' : 'neutral'}
-        />
+          <Status
+            text={
+              action
+                ? 'Action required'
+                : active
+                  ? 'In progress'
+                  : p.cases.length
+                    ? 'Complete (Simulation)'
+                    : 'Not started'
+            }
+            tone={action ? 'red' : active ? 'blue' : 'neutral'}
+          />
         </span>
         <span className="next">
-        {action
-          ? 'Upload document'
-          : p.submittedAt
-            ? 'View status'
-            : 'Continue'}
-        <ChevronRight size={14} />
+          {action
+            ? 'Upload document'
+            : pendingOrganizations.length
+              ? 'Continue'
+              : p.submittedAt
+                ? 'View status'
+                : 'Continue'}
+          <ChevronRight size={14} />
         </span>
       </button>
       <DeletePractitionerDialog
@@ -897,7 +1006,8 @@ function DeletePractitionerDialog({
 }) {
   const [open, setOpen] = useState(false),
     [busy, setBusy] = useState(false),
-    name = `${practitioner.practitioner?.firstName ?? ''} ${practitioner.practitioner?.lastName ?? ''}`.trim();
+    name =
+      `${practitioner.practitioner?.firstName ?? ''} ${practitioner.practitioner?.lastName ?? ''}`.trim();
   async function remove() {
     setBusy(true);
     if (await onDelete(practitioner)) setOpen(false);
@@ -919,7 +1029,9 @@ function DeletePractitionerDialog({
       </AlertDialogTrigger>
       <AlertDialogContent className="delete-dialog">
         <AlertDialogHeader>
-          <AlertDialogMedia className="delete-dialog-icon"><Trash2 /></AlertDialogMedia>
+          <AlertDialogMedia className="delete-dialog-icon">
+            <Trash2 />
+          </AlertDialogMedia>
           <AlertDialogTitle>Delete {name}?</AlertDialogTitle>
           <AlertDialogDescription>
             This permanently removes the practitioner, application progress,
@@ -927,7 +1039,9 @@ function DeletePractitionerDialog({
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={busy}>Keep practitioner</AlertDialogCancel>
+          <AlertDialogCancel disabled={busy}>
+            Keep practitioner
+          </AlertDialogCancel>
           <AlertDialogAction
             className="danger-confirm"
             disabled={busy}
@@ -950,7 +1064,7 @@ function PractitionerWizard({
 }: {
   account: AccountState;
   setAccount: React.Dispatch<React.SetStateAction<AccountState>>;
-  go: (v: string, id?: string) => void;
+  go: Navigate;
   notify: (s: string) => void;
 }) {
   const [step, setStep] = useState(1),
@@ -1009,6 +1123,66 @@ function PractitionerWizard({
     const location = lookup.addresses.find((a) => a.purpose === 'LOCATION'),
       cms = lookup.cms.facts.rows[0],
       id = uid(),
+      profile: ManagedPractitioner['profile'] = {
+        ...blankProfile,
+        degree: canonicalDegree(lookup.credential ?? '') ?? '',
+        licenseState:
+          lookup.taxonomies.find((taxonomy) => taxonomy.primary)?.state ?? '',
+        licenseNumber:
+          lookup.taxonomies.find((taxonomy) => taxonomy.primary)?.license ?? '',
+        practiceAddress: location
+          ? `${location.line1}, ${location.city}, ${location.state} ${location.postalCode}`
+          : '',
+        education: cms?.medicalSchool ?? '',
+        graduationYear: cms?.graduationYear ?? '',
+      },
+      histories: ProviderHistories = {
+        education:
+          profile.education || profile.graduationYear
+            ? [
+                {
+                  id: uid(),
+                  institution: profile.education,
+                  degree: profile.degree,
+                  graduationYear: profile.graduationYear,
+                },
+              ]
+            : [],
+        licenses:
+          profile.licenseState || profile.licenseNumber
+            ? [
+                {
+                  id: uid(),
+                  state: profile.licenseState,
+                  licenseNumber: profile.licenseNumber,
+                  licenseType: profile.degree,
+                  expirationDate: '',
+                },
+              ]
+            : [],
+        practices: profile.practiceAddress
+          ? [
+              {
+                id: uid(),
+                organization: cms?.name ?? '',
+                address: profile.practiceAddress,
+                startYear: '',
+                endYear: '',
+                current: true,
+              },
+            ]
+          : [],
+        affiliations: Array.from(
+          new Set(lookup.cms.facts.rows.map((row) => row.name).filter(Boolean)),
+        ).map((hospital) => ({
+          id: uid(),
+          hospital: hospital ?? '',
+          startYear: '',
+          endYear: '',
+          current: true,
+        })),
+      },
+      dataConflicts = conflictsFromLookup(lookup),
       practitioner: ManagedPractitioner = {
         id,
         role: 'provider',
@@ -1016,19 +1190,10 @@ function PractitionerWizard({
         contactEmail: email,
         caqhId: caqh,
         selectedOrganizations: selected,
-        profile: {
-          ...blankProfile,
-          degree: canonicalDegree(lookup.credential ?? '') ?? '',
-          licenseState:
-            lookup.taxonomies.find((taxonomy) => taxonomy.primary)?.state ?? '',
-          licenseNumber:
-            lookup.taxonomies.find((taxonomy) => taxonomy.primary)?.license ?? '',
-          practiceAddress: location
-            ? `${location.line1}, ${location.city}, ${location.state} ${location.postalCode}`
-            : '',
-          education: cms?.medicalSchool ?? '',
-          graduationYear: cms?.graduationYear ?? '',
-        },
+        profile,
+        histories,
+        dataConflicts,
+        submissions: [],
         documents: [],
         attested: false,
         cases: [],
@@ -1043,13 +1208,23 @@ function PractitionerWizard({
         ...current,
         practitioners: [...current.practitioners, practitioner],
       }));
-      notify('Profile ready. Review the prefilled information and missing items.');
-      go('onboarding', id);
+      notify(
+        'Profile ready. Review the prefilled information and missing items.',
+      );
+      go(
+        'onboarding',
+        id,
+        dataConflicts.length ? 'Resolve conflicts' : undefined,
+      );
     }, 3600);
   }
 
-  const primaryTaxonomy = lookup?.taxonomies.find((taxonomy) => taxonomy.primary),
-    location = lookup?.addresses.find((address) => address.purpose === 'LOCATION');
+  const primaryTaxonomy = lookup?.taxonomies.find(
+      (taxonomy) => taxonomy.primary,
+    ),
+    location = lookup?.addresses.find(
+      (address) => address.purpose === 'LOCATION',
+    );
 
   return (
     <div className="wizard-page">
@@ -1070,8 +1245,13 @@ function PractitionerWizard({
               preparing the selected organization requirements.
             </p>
             <div className="fetch-stages">
-              <span><Check size={14} /> NPI validated</span>
-              <span><LoaderCircle size={14} className="loading-spinner" /> Matching sources</span>
+              <span>
+                <Check size={14} /> NPI validated
+              </span>
+              <span>
+                <LoaderCircle size={14} className="loading-spinner" /> Matching
+                sources
+              </span>
               <span>Preparing missing items</span>
             </div>
           </output>
@@ -1086,9 +1266,12 @@ function PractitionerWizard({
                   {step === 3 && 'Choose organizations'}
                 </h1>
                 <p>
-                  {step === 1 && 'We’ll use the NPI to prefill information that is already available.'}
-                  {step === 2 && 'Review the matched record and add the contact details for this workspace.'}
-                  {step === 3 && 'Select where this practitioner will complete credentialing applications.'}
+                  {step === 1 &&
+                    'We’ll use the NPI to prefill information that is already available.'}
+                  {step === 2 &&
+                    'Review the matched record and add the contact details for this workspace.'}
+                  {step === 3 &&
+                    'Select where this practitioner will complete credentialing applications.'}
                 </p>
               </div>
               <span className="step-count">Step {step} of 3</span>
@@ -1106,7 +1289,9 @@ function PractitionerWizard({
                   <input
                     inputMode="numeric"
                     value={npi}
-                    onChange={(event) => setNpi(event.target.value.replace(/\D/g, ''))}
+                    onChange={(event) =>
+                      setNpi(event.target.value.replace(/\D/g, ''))
+                    }
                     onKeyDown={(event) => {
                       if (event.key === 'Enter') void validateNpi();
                     }}
@@ -1116,12 +1301,29 @@ function PractitionerWizard({
                   />
                 </label>
                 <p id="npi-help" className="field-help">
-                  For this prototype, try example NPI <button onClick={() => setNpi('1003000126')}>1003000126</button>.
+                  For this prototype, try example NPI{' '}
+                  <button onClick={() => setNpi('1003000126')}>
+                    1003000126
+                  </button>
+                  .
                 </p>
-                {error && <div className="error"><AlertCircle size={16} />{error}</div>}
+                {error && (
+                  <div className="error">
+                    <AlertCircle size={16} />
+                    {error}
+                  </div>
+                )}
                 <div className="wizard-actions end">
-                  <button className="primary-button roomy" onClick={() => void validateNpi()} disabled={busy || npi.length !== 10}>
-                    {busy ? <LoaderCircle size={16} className="loading-spinner" /> : <Search size={16} />}
+                  <button
+                    className="primary-button roomy"
+                    onClick={() => void validateNpi()}
+                    disabled={busy || npi.length !== 10}
+                  >
+                    {busy ? (
+                      <LoaderCircle size={16} className="loading-spinner" />
+                    ) : (
+                      <Search size={16} />
+                    )}
                     Validate NPI
                   </button>
                 </div>
@@ -1131,24 +1333,75 @@ function PractitionerWizard({
             {step === 2 && lookup && (
               <div className="wizard-body">
                 <div className="verified-profile">
-                  <span><CheckCircle2 size={20} /></span>
+                  <span>
+                    <CheckCircle2 size={20} />
+                  </span>
                   <div>
                     <small>NPI record matched</small>
-                    <h2>{lookup.firstName} {lookup.lastName}, {lookup.credential}</h2>
-                    <p>{primaryTaxonomy?.description ?? 'Specialty unavailable'} · {location?.city}, {location?.state}</p>
+                    <h2>
+                      {lookup.firstName} {lookup.lastName}, {lookup.credential}
+                    </h2>
+                    <p>
+                      {primaryTaxonomy?.description ?? 'Specialty unavailable'}{' '}
+                      · {location?.city}, {location?.state}
+                    </p>
                   </div>
                   <b>NPI {lookup.npi}</b>
                 </div>
                 <div className="wizard-form-grid">
-                  <Field label="First name"><input className="input w-full" value={first} onChange={(e) => setFirst(e.target.value)} /></Field>
-                  <Field label="Last name"><input className="input w-full" value={last} onChange={(e) => setLast(e.target.value)} /></Field>
-                  <Field label="Contact email"><input className="input w-full" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="provider@example.com" /></Field>
-                  <Field label="CAQH ID (optional)"><input className="input w-full" value={caqh} onChange={(e) => setCaqh(e.target.value)} placeholder="Enter if available" /></Field>
+                  <Field label="First name">
+                    <input
+                      className="input w-full"
+                      value={first}
+                      onChange={(e) => setFirst(e.target.value)}
+                    />
+                  </Field>
+                  <Field label="Last name">
+                    <input
+                      className="input w-full"
+                      value={last}
+                      onChange={(e) => setLast(e.target.value)}
+                    />
+                  </Field>
+                  <Field label="Contact email">
+                    <input
+                      className="input w-full"
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="provider@example.com"
+                    />
+                  </Field>
+                  <Field label="CAQH ID (optional)">
+                    <input
+                      className="input w-full"
+                      value={caqh}
+                      onChange={(e) => setCaqh(e.target.value)}
+                      placeholder="Enter if available"
+                    />
+                  </Field>
                 </div>
-                {error && <div className="error"><AlertCircle size={16} />{error}</div>}
+                {error && (
+                  <div className="error">
+                    <AlertCircle size={16} />
+                    {error}
+                  </div>
+                )}
                 <div className="wizard-actions">
-                  <button className="secondary-button roomy" onClick={() => setStep(1)}>Back</button>
-                  <button className="primary-button roomy" onClick={() => email ? setStep(3) : setError('Add a contact email before continuing.')}>
+                  <button
+                    className="secondary-button roomy"
+                    onClick={() => setStep(1)}
+                  >
+                    Back
+                  </button>
+                  <button
+                    className="primary-button roomy"
+                    onClick={() =>
+                      email
+                        ? setStep(3)
+                        : setError('Add a contact email before continuing.')
+                    }
+                  >
                     Next: Organizations <ArrowRight size={16} />
                   </button>
                 </div>
@@ -1164,19 +1417,44 @@ function PractitionerWizard({
                       <button
                         key={organization.id}
                         className={active ? 'selected' : ''}
-                        onClick={() => setSelected((current) => active ? current.filter((id) => id !== organization.id) : [...current, organization.id])}
+                        onClick={() =>
+                          setSelected((current) =>
+                            active
+                              ? current.filter((id) => id !== organization.id)
+                              : [...current, organization.id],
+                          )
+                        }
                       >
-                        <span className="org-icon"><Building2 size={19} /></span>
-                        <span><b>{organization.name}</b><small>{organization.subtitle}</small></span>
+                        <span className="org-icon">
+                          <Building2 size={19} />
+                        </span>
+                        <span>
+                          <b>{organization.name}</b>
+                          <small>{organization.subtitle}</small>
+                        </span>
                         <i>{active && <Check size={13} />}</i>
                       </button>
                     );
                   })}
                 </div>
-                {error && <div className="error"><AlertCircle size={16} />{error}</div>}
+                {error && (
+                  <div className="error">
+                    <AlertCircle size={16} />
+                    {error}
+                  </div>
+                )}
                 <div className="wizard-actions">
-                  <button className="secondary-button roomy" onClick={() => setStep(2)}>Back</button>
-                  <button className="primary-button roomy" onClick={createPractitioner} disabled={!selected.length}>
+                  <button
+                    className="secondary-button roomy"
+                    onClick={() => setStep(2)}
+                  >
+                    Back
+                  </button>
+                  <button
+                    className="primary-button roomy"
+                    onClick={createPractitioner}
+                    disabled={!selected.length}
+                  >
                     Create Practitioner <ArrowRight size={16} />
                   </button>
                 </div>
@@ -1192,17 +1470,24 @@ function PractitionerWizard({
 function Workspace({
   practitioner: p,
   view,
+  onboardingSection,
   save,
   go,
   notify,
 }: {
   practitioner: ManagedPractitioner;
   view: string;
+  onboardingSection?: OnboardingSection;
   save: (p: ManagedPractitioner) => void;
-  go: (v: string, id?: string) => void;
+  go: Navigate;
   notify: (s: string) => void;
 }) {
-  const reqs = evaluateRequirements(p),
+  const pendingOrganizations = pendingOrganizationIds(p),
+    submittedOrganizations = submittedOrganizationIds(p),
+    requirementOrganizations = pendingOrganizations.length
+      ? pendingOrganizations
+      : p.selectedOrganizations,
+    reqs = evaluateRequirements(p, requirementOrganizations),
     missing = reqs.filter((r) => !r.satisfied),
     pct = reqs.length
       ? Math.round(((reqs.length - missing.length) / reqs.length) * 100)
@@ -1218,10 +1503,100 @@ function Workspace({
       updatedAt: now(),
     });
   }
+  function updateHistories(histories: ProviderHistories) {
+    const currentPractice = histories.practices.find((item) => item.current),
+      primaryEducation = histories.education[0],
+      primaryLicense = histories.licenses[0],
+      currentAffiliation =
+        histories.affiliations.find((item) => item.current) ??
+        histories.affiliations[0];
+    save({
+      ...p,
+      histories,
+      profile: {
+        ...p.profile,
+        education: primaryEducation?.institution ?? '',
+        graduationYear: primaryEducation?.graduationYear ?? '',
+        licenseState: primaryLicense?.state ?? '',
+        licenseNumber: primaryLicense?.licenseNumber ?? '',
+        practiceAddress: currentPractice?.address ?? '',
+        hospitalAffiliation: currentAffiliation?.hospital ?? '',
+      },
+      attested: false,
+      updatedAt: now(),
+    });
+  }
+  function resolveConflict(conflictId: string, optionId: string) {
+    const conflict = p.dataConflicts?.find((item) => item.id === conflictId),
+      option = conflict?.options.find((item) => item.id === optionId);
+    if (!conflict || !option) return;
+    const resolvedAt = now(),
+      histories = historiesFor(p),
+      nextHistories: ProviderHistories =
+        conflict.fieldKey === 'practiceAddress'
+          ? {
+              ...histories,
+              practices: histories.practices.length
+                ? histories.practices.map((item, index) =>
+                    item.current || index === 0
+                      ? { ...item, address: option.value, current: true }
+                      : item,
+                  )
+                : [
+                    {
+                      id: uid(),
+                      organization: '',
+                      address: option.value,
+                      startYear: '',
+                      endYear: '',
+                      current: true,
+                    },
+                  ],
+            }
+          : conflict.fieldKey === 'education'
+            ? {
+                ...histories,
+                education: histories.education.length
+                  ? histories.education.map((item, index) =>
+                      index === 0
+                        ? { ...item, institution: option.value }
+                        : item,
+                    )
+                  : [
+                      {
+                        id: uid(),
+                        institution: option.value,
+                        degree: p.profile.degree,
+                        graduationYear: p.profile.graduationYear,
+                      },
+                    ],
+              }
+            : histories;
+    save({
+      ...p,
+      profile: { ...p.profile, [conflict.fieldKey]: option.value },
+      histories: nextHistories,
+      dataConflicts: (p.dataConflicts ?? []).map((item) =>
+        item.id === conflictId
+          ? { ...item, selectedOptionId: optionId, resolvedAt }
+          : item,
+      ),
+      attested: false,
+      audit: [
+        ...p.audit,
+        {
+          action: `Provider resolved ${conflict.label} conflict using ${option.source}`,
+          at: resolvedAt,
+        },
+      ],
+      updatedAt: resolvedAt,
+    });
+    notify('Conflict resolved and the confirmed value is now in your profile.');
+  }
   function toggleOrg(org: string) {
     const on = p.selectedOrganizations.includes(org);
-    if (on && p.submittedAt) {
-      notify('Submitted organizations can’t be removed from this application.');
+    if (on && submittedOrganizations.includes(org)) {
+      notify('A submitted organization can’t be removed from its snapshot.');
       return;
     }
     if (on && p.selectedOrganizations.length === 1) {
@@ -1239,14 +1614,19 @@ function Workspace({
     notify(
       on
         ? 'Organization removed from the draft.'
-        : 'Organization added. New requirements were calculated.',
+        : submittedOrganizations.length
+          ? 'Organization added. Only its new requirements need review.'
+          : 'Organization added. New requirements were calculated.',
     );
   }
   async function persistDocument(file: File) {
     const form = new FormData();
     form.set('file', file);
     form.set('practitionerId', p.id);
-    const response = await fetch('/api/documents', { method: 'POST', body: form });
+    const response = await fetch('/api/documents', {
+      method: 'POST',
+      body: form,
+    });
     const result = (await response.json()) as {
       error?: string;
       path?: string;
@@ -1266,7 +1646,9 @@ function Workspace({
     try {
       stored = await persistDocument(f);
     } catch (error) {
-      notify(error instanceof Error ? error.message : 'Document upload failed.');
+      notify(
+        error instanceof Error ? error.message : 'Document upload failed.',
+      );
       return;
     }
     save({
@@ -1287,29 +1669,16 @@ function Workspace({
     notify('Document added to this practitioner’s profile.');
   }
   function submit() {
-    if (missing.length || !p.attested || !p.attestedBy?.trim()) return;
-    const at = now();
-    save({
-      ...p,
-      submittedAt: at,
-      cases: p.selectedOrganizations.map((organizationId) => ({
-        id: uid(),
-        organizationId,
-        status: 'submitted',
-        events: [
-          {
-            id: uid(),
-            label: 'Application submitted',
-            at,
-            visibleToProvider: true,
-            note: 'Credentialing simulation ready to begin.',
-          },
-        ],
-      })),
-      updatedAt: at,
-    });
+    if (
+      !pendingOrganizations.length ||
+      missing.length ||
+      !p.attested ||
+      !p.attestedBy?.trim()
+    )
+      return;
+    save(createIncrementalSubmission(p, now(), uid));
     notify(
-      'Application submitted to all selected demonstration organizations.',
+      `Application submitted to ${pendingOrganizations.length} new organization${pendingOrganizations.length > 1 ? 's' : ''}. Existing submissions were not changed.`,
     );
     go('credentialing', p.id);
   }
@@ -1379,7 +1748,9 @@ function Workspace({
     try {
       stored = await persistDocument(f);
     } catch (error) {
-      notify(error instanceof Error ? error.message : 'Document upload failed.');
+      notify(
+        error instanceof Error ? error.message : 'Document upload failed.',
+      );
       return;
     }
     save({
@@ -1446,7 +1817,7 @@ function Workspace({
           </div>
         </div>
         <div className="workspace-actions">
-          {!p.submittedAt && (
+          {pendingOrganizations.length > 0 && (
             <button
               className="primary-button"
               onClick={() =>
@@ -1457,7 +1828,7 @@ function Workspace({
               <ArrowRight size={13} />
             </button>
           )}
-          {p.submittedAt && (
+          {submittedOrganizations.length > 0 && (
             <button
               className="secondary-button"
               onClick={() => go('credentialing', p.id)}
@@ -1499,9 +1870,13 @@ function Workspace({
       )}{' '}
       {view === 'onboarding' && (
         <Onboarding
+          key={onboardingSection ?? 'default'}
           p={p}
           reqs={reqs}
+          initialSection={onboardingSection}
           update={updateProfile}
+          updateHistories={updateHistories}
+          resolveConflict={resolveConflict}
           upload={upload}
           go={go}
         />
@@ -1513,6 +1888,7 @@ function Workspace({
           missing={missing}
           save={save}
           submit={submit}
+          pendingOrganizations={pendingOrganizations}
           go={go}
         />
       )}{' '}
@@ -1551,14 +1927,17 @@ function Overview({
   reqs: ReturnType<typeof evaluateRequirements>;
   missing: ReturnType<typeof evaluateRequirements>;
   pct: number;
-  go: (v: string, id?: string) => void;
+  go: Navigate;
   toggleOrg: (id: string) => void;
 }) {
-  const facts = p.practitioner?.nppes.facts.factCount ?? 0;
+  const facts = p.practitioner?.nppes.facts.factCount ?? 0,
+    submittedOrganizations = submittedOrganizationIds(p);
   return (
     <div className="overview-grid">
       <div className="space-y-5">
-        <section className={`surface readiness-card ${missing.length ? 'needs-attention' : ''}`}>
+        <section
+          className={`surface readiness-card ${missing.length ? 'needs-attention' : ''}`}
+        >
           <div>
             <p className="eyebrow">Application readiness</p>
             <h2>{pct}% complete</h2>
@@ -1597,7 +1976,13 @@ function Overview({
                 <button
                   className="missing-task"
                   key={r.id}
-                  onClick={() => go('onboarding', p.id)}
+                  onClick={() =>
+                    go(
+                      'onboarding',
+                      p.id,
+                      onboardingSectionForRequirement(r.category),
+                    )
+                  }
                 >
                   <span>
                     <ClipboardCheck size={15} />
@@ -1639,32 +2024,45 @@ function Overview({
             {organizations
               .filter((o) => p.selectedOrganizations.includes(o.id))
               .map((o) => {
-                const orgReq = reqs.filter((r) =>
-                    r.organizationIds.includes(o.id),
-                  ),
+                const isSubmitted = submittedOrganizations.includes(o.id),
+                  orgReq = reqs.filter((r) => r.organizationIds.includes(o.id)),
                   left = orgReq.filter((r) => !r.satisfied).length;
                 return (
-                  <div className={left ? 'org-needs-attention' : 'org-ready'} key={o.id}>
+                  <div
+                    className={left ? 'org-needs-attention' : 'org-ready'}
+                    key={o.id}
+                  >
                     <span className="org-mark">
                       <Building2 size={15} />
                     </span>
                     <div>
                       <b>{o.name}</b>
                       <small>
-                        {left
-                          ? `${left} missing requirement${left > 1 ? 's' : ''}`
-                          : 'Ready for submission'}
+                        {isSubmitted
+                          ? 'Immutable application snapshot submitted'
+                          : left
+                            ? `${left} missing requirement${left > 1 ? 's' : ''}`
+                            : 'Ready for submission'}
                       </small>
                     </div>
                     <Status
-                      text={left ? `${left} remaining` : 'Ready'}
-                      tone={left ? 'red' : 'green'}
+                      text={
+                        isSubmitted
+                          ? 'Submitted'
+                          : left
+                            ? `${left} remaining`
+                            : 'Ready'
+                      }
+                      tone={left && !isSubmitted ? 'red' : 'green'}
                     />
                     <RemoveOrganizationDialog
                       organizationName={o.name}
-                      disabled={Boolean(p.submittedAt) || p.selectedOrganizations.length === 1}
+                      disabled={
+                        submittedOrganizations.includes(o.id) ||
+                        p.selectedOrganizations.length === 1
+                      }
                       disabledReason={
-                        p.submittedAt
+                        submittedOrganizations.includes(o.id)
                           ? 'Submitted organizations cannot be removed'
                           : 'At least one organization is required'
                       }
@@ -1676,35 +2074,32 @@ function Overview({
           </div>
         </section>
         {organizations.some((o) => !p.selectedOrganizations.includes(o.id)) && (
-        <section id="add-org" className="surface panel">
-          <div className="panel-head">
-            <div>
-              <h2>Add another organization</h2>
-              <p>
-                Existing permitted information will be reused automatically.
-              </p>
+          <section id="add-org" className="surface panel">
+            <div className="panel-head">
+              <div>
+                <h2>Add another organization</h2>
+                <p>
+                  Existing permitted information will be reused automatically.
+                </p>
+              </div>
             </div>
-          </div>
-          <div className="inline-orgs">
-            {organizations
-              .filter((o) => !p.selectedOrganizations.includes(o.id))
-              .map((o) => {
-              return (
-                <button
-                  onClick={() => toggleOrg(o.id)}
-                  key={o.id}
-                >
-                  <Building2 size={15} />
-                  <span>
-                    <b>{o.name}</b>
-                    <small>Add without restarting</small>
-                  </span>
-                  <Plus size={14} />
-                </button>
-              );
-            })}
-          </div>
-        </section>
+            <div className="inline-orgs">
+              {organizations
+                .filter((o) => !p.selectedOrganizations.includes(o.id))
+                .map((o) => {
+                  return (
+                    <button onClick={() => toggleOrg(o.id)} key={o.id}>
+                      <Building2 size={15} />
+                      <span>
+                        <b>{o.name}</b>
+                        <small>Add without restarting</small>
+                      </span>
+                      <Plus size={14} />
+                    </button>
+                  );
+                })}
+            </div>
+          </section>
         )}
       </div>
       <aside className="space-y-5">
@@ -1787,11 +2182,14 @@ function RemoveOrganizationDialog({
       </AlertDialogTrigger>
       <AlertDialogContent className="delete-dialog">
         <AlertDialogHeader>
-          <AlertDialogMedia className="remove-org-dialog-icon"><Building2 /></AlertDialogMedia>
+          <AlertDialogMedia className="remove-org-dialog-icon">
+            <Building2 />
+          </AlertDialogMedia>
           <AlertDialogTitle>Remove {organizationName}?</AlertDialogTitle>
           <AlertDialogDescription>
             Its requirements will be removed from readiness and your completion
-            score will be recalculated immediately. Your shared profile stays intact.
+            score will be recalculated immediately. Your shared profile stays
+            intact.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
@@ -1814,22 +2212,31 @@ function RemoveOrganizationDialog({
 function Onboarding({
   p,
   reqs,
+  initialSection,
   update,
+  updateHistories,
+  resolveConflict,
   upload,
   go,
 }: {
   p: ManagedPractitioner;
   reqs: ReturnType<typeof evaluateRequirements>;
+  initialSection?: OnboardingSection;
   update: (k: keyof ManagedPractitioner['profile'], v: string) => void;
+  updateHistories: (histories: ProviderHistories) => void;
+  resolveConflict: (conflictId: string, optionId: string) => void;
   upload: (e: React.ChangeEvent<HTMLInputElement>, t?: string) => void;
-  go: (v: string, id?: string) => void;
+  go: Navigate;
 }) {
   const sections = onboardingSections(p),
     [activeSection, setActiveSection] = useState<OnboardingSection>(
-      'Professional details',
+      initialSection && sections.includes(initialSection)
+        ? initialSection
+        : 'Professional details',
     ),
     activeIndex = sections.indexOf(activeSection),
     missing = reqs.filter((r) => !r.satisfied),
+    histories = historiesFor(p),
     pct = reqs.length
       ? Math.round(((reqs.length - missing.length) / reqs.length) * 100)
       : 0;
@@ -1884,117 +2291,361 @@ function Onboarding({
             <small>items left</small>
           </span>
         </section>
-        {activeSection !== 'Documents' && (
-        <section key={activeSection} className="surface panel onboarding-section">
-          <p className="eyebrow">Step {activeIndex + 1} of {sections.length}</p>
-          <h2>{activeSection}</h2>
-          <p className="panel-copy">
-            Review prefilled values and complete anything still missing.
-          </p>
-          <div className="form-grid">
-            {activeSection === 'Professional details' && (
-            <SelectField
-              label="Professional degree"
-              value={p.profile.degree}
-              options={degreeOptions}
-              onChange={(v) => update('degree', v)}
-            />
-            )}
-            {activeSection === 'License' && (<>
-            <SelectField
-              label="License state"
-              value={p.profile.licenseState}
-              options={stateOptions}
-              onChange={(v) => update('licenseState', v)}
-            />
-            <Field label="License number">
-              <input
-                className="input w-full"
-                value={p.profile.licenseNumber}
-                onChange={(e) => update('licenseNumber', e.target.value)}
-                placeholder="Enter license number"
-              />
-            </Field>
-            </>)}
-            {activeSection === 'Education' && (<>
-            <SelectField
-              label="Graduation year"
-              value={p.profile.graduationYear}
-              options={yearOptions}
-              onChange={(v) => update('graduationYear', v)}
-            />
-            <Field label="Medical school">
-              <input
-                className="input w-full"
-                value={p.profile.education}
-                onChange={(e) => update('education', e.target.value)}
-                placeholder="Institution name"
-              />
-            </Field>
-            </>)}
-            {activeSection === 'Practice' && (
-            <Field label="Primary practice address">
-              <input
-                className="input w-full"
-                value={p.profile.practiceAddress}
-                onChange={(e) => update('practiceAddress', e.target.value)}
-                placeholder="Street, city, state, ZIP"
-              />
-            </Field>
-            )}
-            {activeSection === 'Affiliations' && (
-                <SelectField
-                  label="Hospital affiliation"
-                  value={p.profile.hospitalAffiliation}
-                  options={hospitals}
-                  onChange={(v) => update('hospitalAffiliation', v)}
-                />
-            )}
-            {activeSection === 'Coverage' && (
-                <SelectField
-                  label="Malpractice carrier"
-                  value={p.profile.malpracticeCarrier}
-                  options={carriers}
-                  onChange={(v) => update('malpracticeCarrier', v)}
-                />
-            )}
-            {activeSection === 'Disclosures' && (
-                <SelectField
-                  label="Professional disclosure"
-                  value={p.profile.disclosure}
-                  options={[
-                    'No — no reportable events',
-                    'Yes — explanation required',
-                  ]}
-                  onChange={(v) => update('disclosure', v)}
-                />
-            )}
-          </div>
-        </section>
-        )}
-        {activeSection === 'Documents' && (
-        <section key={activeSection} className="surface panel onboarding-section">
-          <p className="eyebrow">Step {activeIndex + 1} of {sections.length}</p>
-          <h2>Supporting documents</h2>
-          <p className="panel-copy">
-            Upload demonstration documents only. Uploaded evidence is not
-            automatically verified.
-          </p>
-          <label className="upload">
-            <Upload size={16} />
-            Upload license document
-            <input hidden type="file" onChange={(e) => upload(e, 'license')} />
-          </label>
-          {p.documents.map((d) => (
-            <div className="document-row" key={d.id}>
-              <FileCheck2 size={16} />
-              <span>
-                <b>{d.name}</b>
-                <small>{d.status}</small>
-              </span>
+        {activeSection === 'Resolve conflicts' && (
+          <section
+            key={activeSection}
+            className="surface panel onboarding-section conflict-section"
+          >
+            <p className="eyebrow">Confirm what is current</p>
+            <h2>Resolve source conflicts</h2>
+            <p className="panel-copy">
+              We found different values across public sources. Choose the value
+              that is accurate today—we will use it throughout your profile.
+            </p>
+            <div className="conflict-list">
+              {(p.dataConflicts ?? []).map((conflict) => (
+                <article
+                  className={`conflict-card ${conflict.resolvedAt ? 'resolved' : ''}`}
+                  key={conflict.id}
+                >
+                  <div className="history-card-head">
+                    <div>
+                      <h3>{conflict.label}</h3>
+                      <p>{conflict.explanation}</p>
+                    </div>
+                    <Status
+                      text={conflict.resolvedAt ? 'Confirmed' : 'Needs review'}
+                      tone={conflict.resolvedAt ? 'green' : 'red'}
+                    />
+                  </div>
+                  <div className="conflict-options">
+                    {conflict.options.map((option) => {
+                      const selected = conflict.selectedOptionId === option.id;
+                      return (
+                        <button
+                          type="button"
+                          className={selected ? 'selected' : ''}
+                          key={option.id}
+                          onClick={() =>
+                            resolveConflict(conflict.id, option.id)
+                          }
+                        >
+                          <span className="choice-dot">
+                            {selected && <Check size={12} />}
+                          </span>
+                          <span>
+                            <b>{option.value}</b>
+                            <small>
+                              {option.source} · retrieved{' '}
+                              {new Date(
+                                option.retrievedAt,
+                              ).toLocaleDateString()}
+                            </small>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </article>
+              ))}
             </div>
-          ))}
-        </section>
+          </section>
+        )}
+        {activeSection !== 'Documents' &&
+          activeSection !== 'Resolve conflicts' && (
+            <section
+              key={activeSection}
+              className="surface panel onboarding-section"
+            >
+              <p className="eyebrow">
+                Step {activeIndex + 1} of {sections.length}
+              </p>
+              <h2>{activeSection}</h2>
+              <p className="panel-copy">
+                Review prefilled values and complete anything still missing.
+              </p>
+              <div className="form-grid">
+                {activeSection === 'Professional details' && (
+                  <SelectField
+                    label="Professional degree"
+                    value={p.profile.degree}
+                    options={degreeOptions}
+                    onChange={(v) => update('degree', v)}
+                  />
+                )}
+                {activeSection === 'License' && (
+                  <div className="repeatable-history">
+                    {histories.licenses.map((license, index) => (
+                      <article className="history-card" key={license.id}>
+                        <HistoryCardHeader
+                          title={`License ${index + 1}`}
+                          subtitle={
+                            index === 0
+                              ? 'Used as the primary license'
+                              : 'Additional professional license'
+                          }
+                          onRemove={() =>
+                            updateHistories({
+                              ...histories,
+                              licenses: histories.licenses.filter(
+                                (item) => item.id !== license.id,
+                              ),
+                            })
+                          }
+                        />
+                        <div className="history-fields four-columns">
+                          <SelectField
+                            label="State"
+                            value={license.state}
+                            options={stateOptions}
+                            onChange={(value) =>
+                              updateHistories({
+                                ...histories,
+                                licenses: histories.licenses.map((item) =>
+                                  item.id === license.id
+                                    ? { ...item, state: value }
+                                    : item,
+                                ),
+                              })
+                            }
+                          />
+                          <Field label="License number">
+                            <input
+                              className="input w-full"
+                              value={license.licenseNumber}
+                              onChange={(event) =>
+                                updateHistories({
+                                  ...histories,
+                                  licenses: histories.licenses.map((item) =>
+                                    item.id === license.id
+                                      ? {
+                                          ...item,
+                                          licenseNumber: event.target.value,
+                                        }
+                                      : item,
+                                  ),
+                                })
+                              }
+                              placeholder="License number"
+                            />
+                          </Field>
+                          <SelectField
+                            label="License type"
+                            value={license.licenseType}
+                            options={degreeOptions}
+                            onChange={(value) =>
+                              updateHistories({
+                                ...histories,
+                                licenses: histories.licenses.map((item) =>
+                                  item.id === license.id
+                                    ? { ...item, licenseType: value }
+                                    : item,
+                                ),
+                              })
+                            }
+                          />
+                          <Field label="Expiration date">
+                            <input
+                              className="input w-full"
+                              type="date"
+                              value={license.expirationDate}
+                              onChange={(event) =>
+                                updateHistories({
+                                  ...histories,
+                                  licenses: histories.licenses.map((item) =>
+                                    item.id === license.id
+                                      ? {
+                                          ...item,
+                                          expirationDate: event.target.value,
+                                        }
+                                      : item,
+                                  ),
+                                })
+                              }
+                            />
+                          </Field>
+                        </div>
+                      </article>
+                    ))}
+                    <AddHistoryButton
+                      label="Add another license"
+                      onClick={() =>
+                        updateHistories({
+                          ...histories,
+                          licenses: [
+                            ...histories.licenses,
+                            {
+                              id: uid(),
+                              state: '',
+                              licenseNumber: '',
+                              licenseType: p.profile.degree,
+                              expirationDate: '',
+                            },
+                          ],
+                        })
+                      }
+                    />
+                  </div>
+                )}
+                {activeSection === 'Education' && (
+                  <div className="repeatable-history">
+                    {histories.education.map((education, index) => (
+                      <article className="history-card" key={education.id}>
+                        <HistoryCardHeader
+                          title={`Education ${index + 1}`}
+                          subtitle={
+                            index === 0
+                              ? 'Used as the primary education record'
+                              : 'Additional education or training'
+                          }
+                          onRemove={() =>
+                            updateHistories({
+                              ...histories,
+                              education: histories.education.filter(
+                                (item) => item.id !== education.id,
+                              ),
+                            })
+                          }
+                        />
+                        <div className="history-fields three-columns">
+                          <Field label="Institution">
+                            <input
+                              className="input w-full"
+                              value={education.institution}
+                              onChange={(event) =>
+                                updateHistories({
+                                  ...histories,
+                                  education: histories.education.map((item) =>
+                                    item.id === education.id
+                                      ? {
+                                          ...item,
+                                          institution: event.target.value,
+                                        }
+                                      : item,
+                                  ),
+                                })
+                              }
+                              placeholder="Institution name"
+                            />
+                          </Field>
+                          <SelectField
+                            label="Degree"
+                            value={education.degree}
+                            options={degreeOptions}
+                            onChange={(value) =>
+                              updateHistories({
+                                ...histories,
+                                education: histories.education.map((item) =>
+                                  item.id === education.id
+                                    ? { ...item, degree: value }
+                                    : item,
+                                ),
+                              })
+                            }
+                          />
+                          <SelectField
+                            label="Graduation year"
+                            value={education.graduationYear}
+                            options={yearOptions}
+                            onChange={(value) =>
+                              updateHistories({
+                                ...histories,
+                                education: histories.education.map((item) =>
+                                  item.id === education.id
+                                    ? { ...item, graduationYear: value }
+                                    : item,
+                                ),
+                              })
+                            }
+                          />
+                        </div>
+                      </article>
+                    ))}
+                    <AddHistoryButton
+                      label="Add education or training"
+                      onClick={() =>
+                        updateHistories({
+                          ...histories,
+                          education: [
+                            ...histories.education,
+                            {
+                              id: uid(),
+                              institution: '',
+                              degree: '',
+                              graduationYear: '',
+                            },
+                          ],
+                        })
+                      }
+                    />
+                  </div>
+                )}
+                {activeSection === 'Practice' && (
+                  <PracticeHistoryEditor
+                    histories={histories}
+                    updateHistories={updateHistories}
+                  />
+                )}
+                {activeSection === 'Affiliations' && (
+                  <AffiliationHistoryEditor
+                    histories={histories}
+                    updateHistories={updateHistories}
+                  />
+                )}
+                {activeSection === 'Coverage' && (
+                  <SelectField
+                    label="Malpractice carrier"
+                    value={p.profile.malpracticeCarrier}
+                    options={carriers}
+                    onChange={(v) => update('malpracticeCarrier', v)}
+                  />
+                )}
+                {activeSection === 'Disclosures' && (
+                  <SelectField
+                    label="Professional disclosure"
+                    value={p.profile.disclosure}
+                    options={[
+                      'No — no reportable events',
+                      'Yes — explanation required',
+                    ]}
+                    onChange={(v) => update('disclosure', v)}
+                  />
+                )}
+              </div>
+            </section>
+          )}
+        {activeSection === 'Documents' && (
+          <section
+            key={activeSection}
+            className="surface panel onboarding-section"
+          >
+            <p className="eyebrow">
+              Step {activeIndex + 1} of {sections.length}
+            </p>
+            <h2>Supporting documents</h2>
+            <p className="panel-copy">
+              Upload demonstration documents only. Uploaded evidence is not
+              automatically verified.
+            </p>
+            <label className="upload">
+              <Upload size={16} />
+              Upload license document
+              <input
+                hidden
+                type="file"
+                onChange={(e) => upload(e, 'license')}
+              />
+            </label>
+            {p.documents.map((d) => (
+              <div className="document-row" key={d.id}>
+                <FileCheck2 size={16} />
+                <span>
+                  <b>{d.name}</b>
+                  <small>{d.status}</small>
+                </span>
+              </div>
+            ))}
+          </section>
         )}
         <div className="form-actions">
           <button
@@ -2022,12 +2673,291 @@ function Onboarding({
   );
 }
 
+function HistoryCardHeader({
+  title,
+  subtitle,
+  onRemove,
+}: {
+  title: string;
+  subtitle: string;
+  onRemove: () => void;
+}) {
+  return (
+    <div className="history-card-head">
+      <div>
+        <h3>{title}</h3>
+        <p>{subtitle}</p>
+      </div>
+      <button
+        type="button"
+        className="history-remove"
+        onClick={onRemove}
+        aria-label={`Remove ${title}`}
+      >
+        <Trash2 size={15} />
+      </button>
+    </div>
+  );
+}
+
+function AddHistoryButton({
+  label,
+  onClick,
+}: {
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button type="button" className="add-history-button" onClick={onClick}>
+      <Plus size={15} />
+      {label}
+    </button>
+  );
+}
+
+function PracticeHistoryEditor({
+  histories,
+  updateHistories,
+}: {
+  histories: ProviderHistories;
+  updateHistories: (histories: ProviderHistories) => void;
+}) {
+  function update(id: string, patch: Partial<PracticeHistory>) {
+    updateHistories({
+      ...histories,
+      practices: histories.practices.map((item) =>
+        item.id === id
+          ? { ...item, ...patch }
+          : patch.current
+            ? { ...item, current: false }
+            : item,
+      ),
+    });
+  }
+  return (
+    <div className="repeatable-history">
+      {histories.practices.map((practice, index) => (
+        <article className="history-card" key={practice.id}>
+          <HistoryCardHeader
+            title={`Practice ${index + 1}`}
+            subtitle={
+              practice.current
+                ? 'Current primary practice'
+                : 'Previous practice'
+            }
+            onRemove={() =>
+              updateHistories({
+                ...histories,
+                practices: histories.practices.filter(
+                  (item) => item.id !== practice.id,
+                ),
+              })
+            }
+          />
+          <div className="history-fields two-columns">
+            <Field label="Organization or practice name">
+              <input
+                className="input w-full"
+                value={practice.organization}
+                onChange={(event) =>
+                  update(practice.id, { organization: event.target.value })
+                }
+                placeholder="Practice name"
+              />
+            </Field>
+            <Field label="Practice address">
+              <input
+                className="input w-full"
+                value={practice.address}
+                onChange={(event) =>
+                  update(practice.id, { address: event.target.value })
+                }
+                placeholder="Street, city, state, ZIP"
+              />
+            </Field>
+            <SelectField
+              label="Start year"
+              value={practice.startYear}
+              options={yearOptions}
+              onChange={(value) => update(practice.id, { startYear: value })}
+            />
+            <SelectField
+              label="End year"
+              value={practice.endYear}
+              options={yearOptions}
+              onChange={(value) => update(practice.id, { endYear: value })}
+            />
+          </div>
+          <label className="current-record">
+            <input
+              type="checkbox"
+              checked={practice.current}
+              onChange={(event) =>
+                update(practice.id, {
+                  current: event.target.checked,
+                  endYear: event.target.checked ? '' : practice.endYear,
+                })
+              }
+            />
+            This is my current primary practice
+          </label>
+        </article>
+      ))}
+      <AddHistoryButton
+        label="Add another practice"
+        onClick={() =>
+          updateHistories({
+            ...histories,
+            practices: [
+              ...histories.practices,
+              {
+                id: uid(),
+                organization: '',
+                address: '',
+                startYear: '',
+                endYear: '',
+                current: histories.practices.length === 0,
+              },
+            ],
+          })
+        }
+      />
+    </div>
+  );
+}
+
+function AffiliationHistoryEditor({
+  histories,
+  updateHistories,
+}: {
+  histories: ProviderHistories;
+  updateHistories: (histories: ProviderHistories) => void;
+}) {
+  function update(id: string, patch: Partial<AffiliationHistory>) {
+    updateHistories({
+      ...histories,
+      affiliations: histories.affiliations.map((item) =>
+        item.id === id ? { ...item, ...patch } : item,
+      ),
+    });
+  }
+  return (
+    <div className="repeatable-history">
+      {histories.affiliations.map((affiliation, index) => (
+        <article className="history-card" key={affiliation.id}>
+          <HistoryCardHeader
+            title={`Affiliation ${index + 1}`}
+            subtitle={
+              affiliation.current
+                ? 'Current affiliation'
+                : 'Previous affiliation'
+            }
+            onRemove={() =>
+              updateHistories({
+                ...histories,
+                affiliations: histories.affiliations.filter(
+                  (item) => item.id !== affiliation.id,
+                ),
+              })
+            }
+          />
+          <div className="history-fields three-columns">
+            <SelectField
+              label="Hospital or facility"
+              value={affiliation.hospital}
+              options={hospitals}
+              onChange={(value) => update(affiliation.id, { hospital: value })}
+            />
+            <SelectField
+              label="Start year"
+              value={affiliation.startYear}
+              options={yearOptions}
+              onChange={(value) => update(affiliation.id, { startYear: value })}
+            />
+            <SelectField
+              label="End year"
+              value={affiliation.endYear}
+              options={yearOptions}
+              onChange={(value) => update(affiliation.id, { endYear: value })}
+            />
+          </div>
+          <label className="current-record">
+            <input
+              type="checkbox"
+              checked={affiliation.current}
+              onChange={(event) =>
+                update(affiliation.id, {
+                  current: event.target.checked,
+                  endYear: event.target.checked ? '' : affiliation.endYear,
+                })
+              }
+            />
+            This affiliation is current
+          </label>
+        </article>
+      ))}
+      <AddHistoryButton
+        label="Add another affiliation"
+        onClick={() =>
+          updateHistories({
+            ...histories,
+            affiliations: [
+              ...histories.affiliations,
+              {
+                id: uid(),
+                hospital: '',
+                startYear: '',
+                endYear: '',
+                current: true,
+              },
+            ],
+          })
+        }
+      />
+    </div>
+  );
+}
+
+function ReviewHistory({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="review-history">
+      <h3>{title}</h3>
+      <div>{children}</div>
+    </section>
+  );
+}
+
+function ReviewHistoryRow({
+  title,
+  detail,
+}: {
+  title: string;
+  detail: string;
+}) {
+  return (
+    <div className="review-history-row">
+      <CheckCircle2 size={16} />
+      <span>
+        <b>{title}</b>
+        <small>{detail || 'Additional details not provided'}</small>
+      </span>
+    </div>
+  );
+}
+
 function Application({
   p,
   reqs,
   missing,
   save,
   submit,
+  pendingOrganizations,
   go,
 }: {
   p: ManagedPractitioner;
@@ -2035,29 +2965,58 @@ function Application({
   missing: ReturnType<typeof evaluateRequirements>;
   save: (p: ManagedPractitioner) => void;
   submit: () => void;
+  pendingOrganizations: string[];
   go: (v: string, id?: string) => void;
 }) {
-  if (p.submittedAt)
+  const histories = historiesFor(p),
+    submissions = p.submissions ?? [];
+  if (!pendingOrganizations.length && submissions.length)
     return (
       <section className="surface submitted-snapshot">
         <CheckCircle2 />
-        <p className="eyebrow">Application submitted</p>
-        <h2>Submitted {new Date(p.submittedAt).toLocaleString()}</h2>
+        <p className="eyebrow">All selected organizations submitted</p>
+        <h2>Your immutable application snapshots are ready</h2>
         <p>
-          This read-only view preserves the professional information and
-          organization requirement versions used at submission.
+          Each organization received its own read-only snapshot. Updating your
+          shared profile or adding another organization will not change these
+          submitted records.
         </p>
-        <div>
-          {p.selectedOrganizations.map((id) => (
-            <span key={id}>{organizations.find((o) => o.id === id)?.name}</span>
+        <div className="snapshot-list">
+          {submissions.map((snapshot) => (
+            <article key={snapshot.id}>
+              <Building2 size={16} />
+              <span>
+                <b>
+                  {
+                    organizations.find(
+                      (organization) =>
+                        organization.id === snapshot.organizationId,
+                    )?.name
+                  }
+                </b>
+                <small>
+                  Submitted {new Date(snapshot.submittedAt).toLocaleString()} ·
+                  version {snapshot.requirementVersion}
+                </small>
+              </span>
+              <Status text="Submitted" tone="green" />
+            </article>
           ))}
         </div>
-        <button
-          className="primary-button"
-          onClick={() => go('credentialing', p.id)}
-        >
-          View Credentialing
-        </button>
+        <div className="snapshot-actions">
+          <button
+            className="secondary-button"
+            onClick={() => go('overview', p.id)}
+          >
+            Add another organization
+          </button>
+          <button
+            className="primary-button"
+            onClick={() => go('credentialing', p.id)}
+          >
+            View Credentialing
+          </button>
+        </div>
       </section>
     );
   return (
@@ -2076,6 +3035,18 @@ function Application({
             tone={missing.length ? 'blue' : 'green'}
           />
         </div>
+        {submissions.length > 0 && (
+          <div className="incremental-banner">
+            <Sparkles size={17} />
+            <span>
+              <b>Only the new organizations will receive this submission.</b>
+              <small>
+                Your {submissions.length} existing snapshot
+                {submissions.length > 1 ? 's are' : ' is'} unchanged.
+              </small>
+            </span>
+          </div>
+        )}
         <dl className="review-list">
           {[
             [
@@ -2091,16 +3062,6 @@ function Application({
               p.practitioner?.taxonomies.find((taxonomy) => taxonomy.primary)
                 ?.description,
             ],
-            ['Medical school', p.profile.education],
-            ['Graduation year', p.profile.graduationYear],
-            [
-              'State license',
-              p.profile.licenseNumber
-                ? `${p.profile.licenseState} ${p.profile.licenseNumber}`
-                : 'Not provided',
-            ],
-            ['Practice address', p.profile.practiceAddress],
-            ['Hospital affiliation', p.profile.hospitalAffiliation],
             ['Malpractice carrier', p.profile.malpracticeCarrier],
             ['Professional disclosure', p.profile.disclosure],
           ].map(([k, v]) => (
@@ -2110,9 +3071,54 @@ function Application({
             </div>
           ))}
         </dl>
+        <ReviewHistory title="Education history">
+          {histories.education.map((item) => (
+            <ReviewHistoryRow
+              key={item.id}
+              title={item.institution || 'Institution not provided'}
+              detail={[item.degree, item.graduationYear]
+                .filter(Boolean)
+                .join(' · ')}
+            />
+          ))}
+        </ReviewHistory>
+        <ReviewHistory title="License history">
+          {histories.licenses.map((item) => (
+            <ReviewHistoryRow
+              key={item.id}
+              title={`${item.state || 'State'} ${item.licenseNumber || 'License number not provided'}`}
+              detail={[
+                item.licenseType,
+                item.expirationDate && `Expires ${item.expirationDate}`,
+              ]
+                .filter(Boolean)
+                .join(' · ')}
+            />
+          ))}
+        </ReviewHistory>
+        <ReviewHistory title="Practice history">
+          {histories.practices.map((item) => (
+            <ReviewHistoryRow
+              key={item.id}
+              title={item.organization || 'Practice'}
+              detail={`${item.address || 'Address not provided'}${item.current ? ' · Current' : ''}`}
+            />
+          ))}
+        </ReviewHistory>
+        {histories.affiliations.length > 0 && (
+          <ReviewHistory title="Affiliation history">
+            {histories.affiliations.map((item) => (
+              <ReviewHistoryRow
+                key={item.id}
+                title={item.hospital || 'Facility not provided'}
+                detail={`${[item.startYear, item.endYear].filter(Boolean).join('–')}${item.current ? ' · Current' : ''}`}
+              />
+            ))}
+          </ReviewHistory>
+        )}
         <div className="selected-org-list">
-          <h3>Selected organizations</h3>
-          {p.selectedOrganizations.map((id) => (
+          <h3>Organizations in this submission</h3>
+          {pendingOrganizations.map((id) => (
             <div key={id}>
               <Building2 size={15} />
               <span>
@@ -2126,12 +3132,19 @@ function Application({
         </div>
         <div className="review-documents">
           <h3>Supporting documents</h3>
-          {p.documents.length ? p.documents.map((document) => (
-            <div key={document.id}>
-              <FileCheck2 size={16} />
-              <span><b>{document.name}</b><small>{document.status}</small></span>
-            </div>
-          )) : <p>No supporting documents uploaded.</p>}
+          {p.documents.length ? (
+            p.documents.map((document) => (
+              <div key={document.id}>
+                <FileCheck2 size={16} />
+                <span>
+                  <b>{document.name}</b>
+                  <small>{document.status}</small>
+                </span>
+              </div>
+            ))
+          ) : (
+            <p>No supporting documents uploaded.</p>
+          )}
         </div>
         <div className="signature-block">
           <p className="eyebrow">Final attestation</p>
@@ -2155,25 +3168,25 @@ function Application({
               placeholder="Full legal name"
             />
           </Field>
-        <label className="attestation">
-          <input
-            type="checkbox"
-            checked={p.attested}
-            onChange={(e) =>
-              save({ ...p, attested: e.target.checked, updatedAt: now() })
-            }
-            disabled={!p.attestedBy?.trim()}
-          />
-          <span>
-            <b>Demonstration practitioner attestation v1.0</b>
-            <small>
-              I have reviewed this application and affirm that the information
-              is accurate to the best of my knowledge. This prototype
-              acknowledgement is not production identity proofing or a legal
-              e-signature.
-            </small>
-          </span>
-        </label>
+          <label className="attestation">
+            <input
+              type="checkbox"
+              checked={p.attested}
+              onChange={(e) =>
+                save({ ...p, attested: e.target.checked, updatedAt: now() })
+              }
+              disabled={!p.attestedBy?.trim()}
+            />
+            <span>
+              <b>Demonstration practitioner attestation v1.0</b>
+              <small>
+                I have reviewed this application and affirm that the information
+                is accurate to the best of my knowledge. This prototype
+                acknowledgement is not production identity proofing or a legal
+                e-signature.
+              </small>
+            </span>
+          </label>
         </div>
       </section>
       <aside className="surface submit-panel review-submit-panel">
@@ -2186,14 +3199,11 @@ function Application({
           ok={p.documents.some((d) => d.type === 'license')}
           text="License document"
         />
-        <Ready
-          ok={Boolean(p.attestedBy?.trim())}
-          text="Typed signature"
-        />
+        <Ready ok={Boolean(p.attestedBy?.trim())} text="Typed signature" />
         <Ready ok={p.attested} text="Practitioner attestation" />
         <Ready
-          ok={p.selectedOrganizations.length > 0}
-          text={`${p.selectedOrganizations.length} organizations selected`}
+          ok={pendingOrganizations.length > 0}
+          text={`${pendingOrganizations.length} new organization${pendingOrganizations.length > 1 ? 's' : ''} selected`}
         />
         {missing.length > 0 && (
           <button
@@ -2208,7 +3218,8 @@ function Application({
           disabled={missing.length > 0 || !p.attested || !p.attestedBy?.trim()}
           onClick={submit}
         >
-          Submit to {p.selectedOrganizations.length} organizations
+          Submit to {pendingOrganizations.length} new organization
+          {pendingOrganizations.length > 1 ? 's' : ''}
           <ArrowRight size={13} />
         </button>
         <p>

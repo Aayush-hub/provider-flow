@@ -3,7 +3,8 @@ import './globals.css';
 
 export const metadata: Metadata = {
   title: 'CertifyOS | Provider Credentialing Made Simple',
-  description: 'A guided provider onboarding and credentialing workspace designed for fast, complete applications.',
+  description:
+    'A guided provider onboarding and credentialing workspace designed for fast, complete applications.',
 };
 
 export default function RootLayout({
@@ -12,7 +13,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" data-scroll-behavior="smooth">
       <body>{children}</body>
     </html>
   );

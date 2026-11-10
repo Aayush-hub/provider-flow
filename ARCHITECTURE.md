@@ -8,11 +8,15 @@ The public acquisition boundary accepts an NPI but never authorizes private acce
 
 `practitioners` is the reusable professional identity. `practitioner_facts` stores canonical values with source, reference, classification, scope, acquisition time, and history linkage. Requirements and mappings are versioned per organization. `submission_snapshots` freeze each organization’s view at submission; later profile edits never mutate historical submissions. Every snapshot owns an independent `credentialing_case` and event history.
 
+The provider workspace mirrors these production concepts in its persisted JSON contract. It stores repeatable education, license, practice, and affiliation histories; explicit source conflicts and provider selections; and one immutable snapshot per submitted organization. Existing workspaces are normalized on load so older single-value profiles and all-at-once submissions remain usable.
+
 ## Acquisition adapters
 
 The NPI route returns a consistent source result: source, status, live/simulated flag, classification, retrieval time, reference, facts, and warning. NPPES is live and authoritative only for its public directory record. CMS Doctors & Clinicians is live public reporting and preserves all returned enrollment/location rows. Neither is labeled primary-source credential verification. CAQH, licensing, and NPDB are intentionally not presented as live.
 
 Failed optional adapters are isolated. NPPES data remains usable when CMS enrichment is missing, edge-blocked, or timed out.
+
+When acquired sources disagree on a supported canonical field, the provider must select the current value before submission. The resolution records the selected source and time in the audit history and updates the reusable profile without changing earlier submission snapshots.
 
 ## Requirement evaluation
 

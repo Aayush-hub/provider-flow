@@ -9,6 +9,9 @@
 - [x] Fresh/returning adaptive onboarding
 - [x] Demonstration document workflow and manual fallback
 - [x] Review, attestation, multi-organization submission
+- [x] Provider-facing source conflict resolution with provenance
+- [x] Repeatable education, license, practice, and affiliation histories
+- [x] Incremental organization submission with immutable snapshots
 - [x] Independent credentialing cases and timelines
 - [x] Reviewer information request and provider response loop
 - [x] Authorized status transitions and simulated decisions
