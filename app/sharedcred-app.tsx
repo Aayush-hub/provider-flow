@@ -275,20 +275,19 @@ export default function SharedCredApp() {
   ) {
     if (!supabase)
       return 'Supabase is not configured for this deployment yet.';
-    const result =
-      mode === 'signup'
-        ? await supabase.auth.signUp({
-            email,
-            password,
-            options: {
-              data: { full_name: fullName },
-              emailRedirectTo: `${location.origin}/auth/callback`,
-            },
-          })
-        : await supabase.auth.signInWithPassword({ email, password });
+    if (mode === 'signup') {
+      const signupResponse = await fetch('/api/auth/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fullName, email, password }),
+      });
+      if (!signupResponse.ok) {
+        const body = (await signupResponse.json()) as { error?: string };
+        return body.error ?? 'Unable to create your account.';
+      }
+    }
+    const result = await supabase.auth.signInWithPassword({ email, password });
     if (result.error) return result.error.message;
-    if (mode === 'signup' && !result.data.session)
-      return 'Check your email to confirm your account, then sign in.';
     const response = await fetch('/api/workspace', { cache: 'no-store' });
     const saved = response.ok
       ? ((await response.json()) as AccountState)
@@ -362,10 +361,10 @@ export default function SharedCredApp() {
           go('login');
         }}
       />
-      <div className="mx-auto max-w-[1240px] px-5 py-8 lg:px-8">
+      <div className="app-shell">
         {route.view === 'dashboard' && <Dashboard account={account} go={go} />}{' '}
         {route.view === 'new' && (
-          <NewPractitioner
+          <PractitionerWizard
             account={account}
             setAccount={setAccount}
             go={go}
@@ -529,7 +528,7 @@ function Header({
 }) {
   return (
     <header className="app-header">
-      <div className="mx-auto flex h-16 max-w-[1240px] items-center justify-between px-5 lg:px-8">
+      <div className="header-shell">
         <button className="logo" onClick={() => go('dashboard')}>
           <span className="brand">
             <ShieldCheck size={19} />
@@ -766,7 +765,7 @@ function PractitionerRow({
   );
 }
 
-function NewPractitioner({
+export function LegacyNewPractitioner({
   account,
   setAccount,
   go,
@@ -1023,6 +1022,253 @@ function NewPractitioner({
   );
 }
 
+function PractitionerWizard({
+  account,
+  setAccount,
+  go,
+  notify,
+}: {
+  account: AccountState;
+  setAccount: React.Dispatch<React.SetStateAction<AccountState>>;
+  go: (v: string, id?: string) => void;
+  notify: (s: string) => void;
+}) {
+  const [step, setStep] = useState(1),
+    [npi, setNpi] = useState(''),
+    [lookup, setLookup] = useState<PractitionerLookup>(),
+    [busy, setBusy] = useState(false),
+    [creating, setCreating] = useState(false),
+    [error, setError] = useState(''),
+    [first, setFirst] = useState(''),
+    [last, setLast] = useState(''),
+    [email, setEmail] = useState(''),
+    [caqh, setCaqh] = useState(''),
+    [selected, setSelected] = useState<string[]>([]);
+
+  async function validateNpi() {
+    setError('');
+    if (!isValidNpi(npi)) {
+      setError('Enter a valid 10-digit individual NPI.');
+      return;
+    }
+    if (account.practitioners.some((p) => p.practitioner?.npi === npi)) {
+      setError('This practitioner is already in your workspace.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/npi/${npi}`);
+      const body = (await response.json()) as
+        | PractitionerLookup
+        | { error: string };
+      if (!response.ok || 'error' in body)
+        throw new Error('error' in body ? body.error : 'Lookup failed');
+      setLookup(body);
+      setFirst(body.firstName);
+      setLast(body.lastName);
+      setStep(2);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Lookup failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function createPractitioner() {
+    if (!lookup || !email) {
+      setError('Add a contact email before continuing.');
+      setStep(2);
+      return;
+    }
+    if (!selected.length) {
+      setError('Select at least one organization.');
+      return;
+    }
+    setError('');
+    setCreating(true);
+    const location = lookup.addresses.find((a) => a.purpose === 'LOCATION'),
+      cms = lookup.cms.facts.rows[0],
+      id = uid(),
+      practitioner: ManagedPractitioner = {
+        id,
+        role: 'provider',
+        practitioner: { ...lookup, firstName: first, lastName: last },
+        contactEmail: email,
+        caqhId: caqh,
+        selectedOrganizations: selected,
+        profile: {
+          ...blankProfile,
+          degree: canonicalDegree(lookup.credential ?? '') ?? '',
+          licenseState:
+            lookup.taxonomies.find((taxonomy) => taxonomy.primary)?.state ?? '',
+          licenseNumber:
+            lookup.taxonomies.find((taxonomy) => taxonomy.primary)?.license ?? '',
+          practiceAddress: location
+            ? `${location.line1}, ${location.city}, ${location.state} ${location.postalCode}`
+            : '',
+          education: cms?.medicalSchool ?? '',
+          graduationYear: cms?.graduationYear ?? '',
+        },
+        documents: [],
+        attested: false,
+        cases: [],
+        audit: [
+          { action: 'Practitioner created from public NPI data', at: now() },
+        ],
+        createdAt: now(),
+        updatedAt: now(),
+      };
+    window.setTimeout(() => {
+      setAccount((current) => ({
+        ...current,
+        practitioners: [...current.practitioners, practitioner],
+      }));
+      notify('Profile ready. Review the prefilled information and missing items.');
+      go('onboarding', id);
+    }, 3600);
+  }
+
+  const primaryTaxonomy = lookup?.taxonomies.find((taxonomy) => taxonomy.primary),
+    location = lookup?.addresses.find((address) => address.purpose === 'LOCATION');
+
+  return (
+    <div className="wizard-page">
+      <button className="wizard-close" onClick={() => go('dashboard')}>
+        <X size={18} />
+        Cancel
+      </button>
+      <section className="wizard-modal" aria-labelledby="wizard-title">
+        {creating ? (
+          <output className="fetching-state">
+            <div className="fetch-orbit">
+              <ShieldCheck size={27} />
+            </div>
+            <p className="eyebrow">Building practitioner profile</p>
+            <h1>Bringing the available data together</h1>
+            <p>
+              We’re matching the NPI record, organizing public facts, and
+              preparing the selected organization requirements.
+            </p>
+            <div className="fetch-stages">
+              <span><Check size={14} /> NPI validated</span>
+              <span><LoaderCircle size={14} className="animate-spin" /> Matching sources</span>
+              <span>Preparing missing items</span>
+            </div>
+          </output>
+        ) : (
+          <>
+            <header className="wizard-header">
+              <div>
+                <p className="eyebrow">Add practitioner</p>
+                <h1 id="wizard-title">
+                  {step === 1 && 'Start with an NPI'}
+                  {step === 2 && 'Confirm practitioner details'}
+                  {step === 3 && 'Choose organizations'}
+                </h1>
+                <p>
+                  {step === 1 && 'We’ll use the NPI to prefill information that is already available.'}
+                  {step === 2 && 'Review the matched record and add the contact details for this workspace.'}
+                  {step === 3 && 'Select where this practitioner will complete credentialing applications.'}
+                </p>
+              </div>
+              <span className="step-count">Step {step} of 3</span>
+            </header>
+            <div className="wizard-progress" aria-label={`Step ${step} of 3`}>
+              {[1, 2, 3].map((item) => (
+                <i key={item} className={item <= step ? 'active' : ''} />
+              ))}
+            </div>
+
+            {step === 1 && (
+              <div className="wizard-body npi-step">
+                <label className="large-field">
+                  <span>National Provider Identifier</span>
+                  <input
+                    inputMode="numeric"
+                    value={npi}
+                    onChange={(event) => setNpi(event.target.value.replace(/\D/g, ''))}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') void validateNpi();
+                    }}
+                    maxLength={10}
+                    placeholder="Enter 10-digit NPI"
+                    aria-describedby="npi-help"
+                  />
+                </label>
+                <p id="npi-help" className="field-help">
+                  For this prototype, try example NPI <button onClick={() => setNpi('1003000126')}>1003000126</button>.
+                </p>
+                {error && <div className="error"><AlertCircle size={16} />{error}</div>}
+                <div className="wizard-actions end">
+                  <button className="primary-button roomy" onClick={() => void validateNpi()} disabled={busy || npi.length !== 10}>
+                    {busy ? <LoaderCircle size={16} className="animate-spin" /> : <Search size={16} />}
+                    Validate NPI
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {step === 2 && lookup && (
+              <div className="wizard-body">
+                <div className="verified-profile">
+                  <span><CheckCircle2 size={20} /></span>
+                  <div>
+                    <small>NPI record matched</small>
+                    <h2>{lookup.firstName} {lookup.lastName}, {lookup.credential}</h2>
+                    <p>{primaryTaxonomy?.description ?? 'Specialty unavailable'} · {location?.city}, {location?.state}</p>
+                  </div>
+                  <b>NPI {lookup.npi}</b>
+                </div>
+                <div className="wizard-form-grid">
+                  <Field label="First name"><input className="input w-full" value={first} onChange={(e) => setFirst(e.target.value)} /></Field>
+                  <Field label="Last name"><input className="input w-full" value={last} onChange={(e) => setLast(e.target.value)} /></Field>
+                  <Field label="Contact email"><input className="input w-full" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="provider@example.com" /></Field>
+                  <Field label="CAQH ID (optional)"><input className="input w-full" value={caqh} onChange={(e) => setCaqh(e.target.value)} placeholder="Enter if available" /></Field>
+                </div>
+                {error && <div className="error"><AlertCircle size={16} />{error}</div>}
+                <div className="wizard-actions">
+                  <button className="secondary-button roomy" onClick={() => setStep(1)}>Back</button>
+                  <button className="primary-button roomy" onClick={() => email ? setStep(3) : setError('Add a contact email before continuing.')}>
+                    Next: Organizations <ArrowRight size={16} />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {step === 3 && (
+              <div className="wizard-body">
+                <div className="organization-choice-grid">
+                  {organizations.map((organization) => {
+                    const active = selected.includes(organization.id);
+                    return (
+                      <button
+                        key={organization.id}
+                        className={active ? 'selected' : ''}
+                        onClick={() => setSelected((current) => active ? current.filter((id) => id !== organization.id) : [...current, organization.id])}
+                      >
+                        <span className="org-icon"><Building2 size={19} /></span>
+                        <span><b>{organization.name}</b><small>{organization.subtitle}</small></span>
+                        <i>{active && <Check size={13} />}</i>
+                      </button>
+                    );
+                  })}
+                </div>
+                {error && <div className="error"><AlertCircle size={16} />{error}</div>}
+                <div className="wizard-actions">
+                  <button className="secondary-button roomy" onClick={() => setStep(2)}>Back</button>
+                  <button className="primary-button roomy" onClick={createPractitioner} disabled={!selected.length}>
+                    Create Practitioner <ArrowRight size={16} />
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </section>
+    </div>
+  );
+}
+
 function Workspace({
   practitioner: p,
   view,
@@ -1113,7 +1359,7 @@ function Workspace({
     notify('Document added to this practitioner’s profile.');
   }
   function submit() {
-    if (missing.length || !p.attested) return;
+    if (missing.length || !p.attested || !p.attestedBy?.trim()) return;
     const at = now();
     save({
       ...p,
@@ -1583,7 +1829,21 @@ function Onboarding({
   upload: (e: React.ChangeEvent<HTMLInputElement>, t?: string) => void;
   go: (v: string, id?: string) => void;
 }) {
-  const missing = reqs.filter((r) => !r.satisfied),
+  const sections = [
+      'Professional details',
+      'Education',
+      'License',
+      'Practice',
+      'Affiliations',
+      'Coverage',
+      'Documents',
+      'Disclosures',
+    ] as const,
+    [activeSection, setActiveSection] = useState<(typeof sections)[number]>(
+      'Professional details',
+    ),
+    activeIndex = sections.indexOf(activeSection),
+    missing = reqs.filter((r) => !r.satisfied),
     pct = reqs.length
       ? Math.round(((reqs.length - missing.length) / reqs.length) * 100)
       : 0;
@@ -1595,24 +1855,21 @@ function Onboarding({
         <div className="mini-progress">
           <i style={{ width: `${pct}%` }} />
         </div>
-        {[
-          'Professional details',
-          'Education',
-          'License',
-          'Practice',
-          'Affiliations',
-          'Coverage',
-          'Documents',
-          'Disclosures',
-        ].map((section) => {
+        {sections.map((section) => {
           const done = !reqs.some(
             (r) => r.category === section && !r.satisfied,
           );
           return (
-            <div key={section} className={done ? 'done' : ''}>
+            <button
+              type="button"
+              key={section}
+              className={`${done ? 'done' : ''} ${activeSection === section ? 'active' : ''}`}
+              onClick={() => setActiveSection(section)}
+            >
               <span>{done ? <Check size={11} /> : ''}</span>
               {section}
-            </div>
+              <ChevronRight size={13} />
+            </button>
           );
         })}
         <button
@@ -1640,19 +1897,23 @@ function Onboarding({
             <small>items left</small>
           </span>
         </section>
-        <section className="surface panel">
-          <h2>Professional information</h2>
+        {activeSection !== 'Documents' && (
+        <section className="surface panel onboarding-section">
+          <p className="eyebrow">Step {activeIndex + 1} of {sections.length}</p>
+          <h2>{activeSection}</h2>
           <p className="panel-copy">
-            Dropdown fields use approved example values. Free text is reserved
-            for genuinely open-ended data.
+            Review prefilled values and complete anything still missing.
           </p>
           <div className="form-grid">
+            {activeSection === 'Professional details' && (
             <SelectField
               label="Professional degree"
               value={p.profile.degree}
               options={degreeOptions}
               onChange={(v) => update('degree', v)}
             />
+            )}
+            {activeSection === 'License' && (<>
             <SelectField
               label="License state"
               value={p.profile.licenseState}
@@ -1667,6 +1928,8 @@ function Onboarding({
                 placeholder="Enter license number"
               />
             </Field>
+            </>)}
+            {activeSection === 'Education' && (<>
             <SelectField
               label="Graduation year"
               value={p.profile.graduationYear}
@@ -1681,6 +1944,8 @@ function Onboarding({
                 placeholder="Institution name"
               />
             </Field>
+            </>)}
+            {activeSection === 'Practice' && (
             <Field label="Primary practice address">
               <input
                 className="input w-full"
@@ -1689,20 +1954,24 @@ function Onboarding({
                 placeholder="Street, city, state, ZIP"
               />
             </Field>
-            {p.selectedOrganizations.includes('evergreen') && (
-              <>
+            )}
+            {activeSection === 'Affiliations' && (
                 <SelectField
                   label="Hospital affiliation"
                   value={p.profile.hospitalAffiliation}
                   options={hospitals}
                   onChange={(v) => update('hospitalAffiliation', v)}
                 />
+            )}
+            {activeSection === 'Coverage' && (
                 <SelectField
                   label="Malpractice carrier"
                   value={p.profile.malpracticeCarrier}
                   options={carriers}
                   onChange={(v) => update('malpracticeCarrier', v)}
                 />
+            )}
+            {activeSection === 'Disclosures' && (
                 <SelectField
                   label="Professional disclosure"
                   value={p.profile.disclosure}
@@ -1712,11 +1981,13 @@ function Onboarding({
                   ]}
                   onChange={(v) => update('disclosure', v)}
                 />
-              </>
             )}
           </div>
         </section>
-        <section className="surface panel">
+        )}
+        {activeSection === 'Documents' && (
+        <section className="surface panel onboarding-section">
+          <p className="eyebrow">Step {activeIndex + 1} of {sections.length}</p>
           <h2>Supporting documents</h2>
           <p className="panel-copy">
             Upload demonstration documents only. Uploaded evidence is not
@@ -1737,6 +2008,7 @@ function Onboarding({
             </div>
           ))}
         </section>
+        )}
         <div className="form-actions">
           <button
             className="secondary-button"
@@ -1746,9 +2018,15 @@ function Onboarding({
           </button>
           <button
             className="primary-button"
-            onClick={() => go('application', p.id)}
+            onClick={() => {
+              if (activeIndex < sections.length - 1)
+                setActiveSection(sections[activeIndex + 1]);
+              else go('application', p.id);
+            }}
           >
-            Continue to Application
+            {activeIndex < sections.length - 1
+              ? `Next: ${sections[activeIndex + 1]}`
+              : 'Review all information'}
             <ArrowRight size={13} />
           </button>
         </div>
@@ -1797,7 +2075,7 @@ function Application({
     );
   return (
     <div className="review-layout">
-      <section className="surface panel">
+      <section className="surface panel review-document">
         <div className="panel-head">
           <div>
             <h2>Consolidated professional application</h2>
@@ -1818,7 +2096,14 @@ function Application({
               `${p.practitioner?.firstName} ${p.practitioner?.lastName}`,
             ],
             ['NPI', p.practitioner?.npi],
+            ['Contact email', p.contactEmail],
+            ['CAQH ID', p.caqhId || 'Not provided'],
             ['Professional degree', p.profile.degree],
+            [
+              'Primary specialty',
+              p.practitioner?.taxonomies.find((taxonomy) => taxonomy.primary)
+                ?.description,
+            ],
             ['Medical school', p.profile.education],
             ['Graduation year', p.profile.graduationYear],
             [
@@ -1828,6 +2113,9 @@ function Application({
                 : 'Not provided',
             ],
             ['Practice address', p.profile.practiceAddress],
+            ['Hospital affiliation', p.profile.hospitalAffiliation],
+            ['Malpractice carrier', p.profile.malpracticeCarrier],
+            ['Professional disclosure', p.profile.disclosure],
           ].map(([k, v]) => (
             <div key={k}>
               <dt>{k}</dt>
@@ -1849,6 +2137,37 @@ function Application({
             </div>
           ))}
         </div>
+        <div className="review-documents">
+          <h3>Supporting documents</h3>
+          {p.documents.length ? p.documents.map((document) => (
+            <div key={document.id}>
+              <FileCheck2 size={16} />
+              <span><b>{document.name}</b><small>{document.status}</small></span>
+            </div>
+          )) : <p>No supporting documents uploaded.</p>}
+        </div>
+        <div className="signature-block">
+          <p className="eyebrow">Final attestation</p>
+          <h3>Sign and submit this application</h3>
+          <p>
+            Review every item above. Type your full legal name and confirm the
+            attestation to enable submission.
+          </p>
+          <Field label="Type full legal name">
+            <input
+              className="input w-full"
+              value={p.attestedBy ?? ''}
+              onChange={(event) =>
+                save({
+                  ...p,
+                  attestedBy: event.target.value,
+                  attested: false,
+                  updatedAt: now(),
+                })
+              }
+              placeholder="Full legal name"
+            />
+          </Field>
         <label className="attestation">
           <input
             type="checkbox"
@@ -1856,6 +2175,7 @@ function Application({
             onChange={(e) =>
               save({ ...p, attested: e.target.checked, updatedAt: now() })
             }
+            disabled={!p.attestedBy?.trim()}
           />
           <span>
             <b>Demonstration practitioner attestation v1.0</b>
@@ -1867,8 +2187,9 @@ function Application({
             </small>
           </span>
         </label>
+        </div>
       </section>
-      <aside className="surface submit-panel">
+      <aside className="surface submit-panel review-submit-panel">
         <h3>Submission readiness</h3>
         <Ready
           ok={missing.length === 0}
@@ -1877,6 +2198,10 @@ function Application({
         <Ready
           ok={p.documents.some((d) => d.type === 'license')}
           text="License document"
+        />
+        <Ready
+          ok={Boolean(p.attestedBy?.trim())}
+          text="Typed signature"
         />
         <Ready ok={p.attested} text="Practitioner attestation" />
         <Ready
@@ -1893,7 +2218,7 @@ function Application({
         )}
         <button
           className="primary-button w-full"
-          disabled={missing.length > 0 || !p.attested}
+          disabled={missing.length > 0 || !p.attested || !p.attestedBy?.trim()}
           onClick={submit}
         >
           Submit to {p.selectedOrganizations.length} organizations

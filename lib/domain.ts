@@ -26,6 +26,7 @@ export interface ManagedPractitioner extends DemoState {
   id: string;
   contactEmail: string;
   caqhId: string;
+  attestedBy?: string;
   createdAt: string;
   updatedAt: string;
 }
