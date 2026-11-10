@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import {
+  Activity,
   AlertCircle,
   ArrowRight,
   Bell,
@@ -11,6 +12,7 @@ import {
   CheckCircle2,
   ChevronRight,
   ClipboardCheck,
+  Clock3,
   FileCheck2,
   FileText,
   Filter,
@@ -21,11 +23,31 @@ import {
   ShieldCheck,
   Sparkles,
   Stethoscope,
+  Trash2,
   Upload,
+  UserRoundCheck,
   UsersRound,
   X,
 } from 'lucide-react';
-import { canonicalDegree, evaluateRequirements } from '@/lib/requirements';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogMedia,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
+import {
+  canonicalDegree,
+  evaluateRequirements,
+  isOnboardingSectionComplete,
+  onboardingSections,
+  type OnboardingSection,
+} from '@/lib/requirements';
 import { isValidNpi } from '@/lib/npi';
 import {
   organizations,
@@ -268,6 +290,30 @@ export default function CertifyOSApp() {
       practitioners: a.practitioners.map((p) => (p.id === next.id ? next : p)),
     }));
   }
+  async function deletePractitioner(practitioner: ManagedPractitioner) {
+    const response = await fetch('/api/documents', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        practitionerId: practitioner.id,
+        paths: practitioner.documents
+          .map((document) => document.storagePath)
+          .filter((path): path is string => Boolean(path)),
+      }),
+    });
+    if (!response.ok) {
+      setToast('We couldn’t delete this practitioner. Please retry.');
+      return false;
+    }
+    setAccount((current) => ({
+      ...current,
+      practitioners: current.practitioners.filter(
+        (item) => item.id !== practitioner.id,
+      ),
+    }));
+    setToast('Practitioner deleted from your workspace.');
+    return true;
+  }
   async function authenticate(
     mode: string,
     fullName: string,
@@ -307,7 +353,7 @@ export default function CertifyOSApp() {
   if (!ready)
     return (
       <div className="grid min-h-screen place-items-center">
-        <LoaderCircle className="animate-spin text-[var(--teal)]" />
+        <LoaderCircle className="loading-spinner text-[var(--teal)]" />
       </div>
     );
   if (configurationError)
@@ -363,7 +409,13 @@ export default function CertifyOSApp() {
         }}
       />
       <div className="app-shell">
-        {route.view === 'dashboard' && <Dashboard account={account} go={go} />}{' '}
+        {route.view === 'dashboard' && (
+          <Dashboard
+            account={account}
+            go={go}
+            deletePractitioner={deletePractitioner}
+          />
+        )}{' '}
         {route.view === 'new' && (
           <PractitionerWizard
             account={account}
@@ -511,7 +563,7 @@ function Auth({
               type="submit"
               disabled={busy}
             >
-              {busy && <LoaderCircle size={14} className="animate-spin" />}
+              {busy && <LoaderCircle size={14} className="loading-spinner" />}
               {signup ? 'Create my account' : 'Sign in securely'}
               <ArrowRight size={14} />
             </button>
@@ -588,9 +640,11 @@ function Header({
 function Dashboard({
   account,
   go,
+  deletePractitioner,
 }: {
   account: AccountState;
   go: (v: string, id?: string) => void;
+  deletePractitioner: (p: ManagedPractitioner) => Promise<boolean>;
 }) {
   const [q, setQ] = useState(''),
     [filter, setFilter] = useState('all');
@@ -650,10 +704,35 @@ function Dashboard({
         <Metric
           value={account.practitioners.length}
           label="Total practitioners"
+          tone="navy"
+          icon={<UserRoundCheck size={18} />}
+          selected={filter === 'all'}
+          onClick={() => setFilter('all')}
         />
-        <Metric value={inProgress} label="Applications in progress" />
-        <Metric value={credentialing} label="Credentialing in progress" />
-        <Metric value={action} label="Action required" attention={action > 0} />
+        <Metric
+          value={inProgress}
+          label="Applications in progress"
+          tone="amber"
+          icon={<Clock3 size={18} />}
+          selected={filter === 'in_progress'}
+          onClick={() => setFilter('in_progress')}
+        />
+        <Metric
+          value={credentialing}
+          label="Credentialing in progress"
+          tone="blue"
+          icon={<Activity size={18} />}
+          selected={filter === 'credentialing'}
+          onClick={() => setFilter('credentialing')}
+        />
+        <Metric
+          value={action}
+          label="Action required"
+          tone="red"
+          icon={<AlertCircle size={18} />}
+          selected={filter === 'action'}
+          onClick={() => setFilter('action')}
+        />
       </div>
       <div className="directory surface">
         <div className="directory-tools">
@@ -682,9 +761,15 @@ function Dashboard({
             <span>Application</span>
             <span>Credentialing</span>
             <span>Next action</span>
+            <span className="actions-heading">Actions</span>
           </div>
           {rows.map((p) => (
-            <PractitionerRow key={p.id} p={p} go={go} />
+            <PractitionerRow
+              key={p.id}
+              p={p}
+              go={go}
+              deletePractitioner={deletePractitioner}
+            />
           ))}
           {!rows.length && (
             <div className="no-results">
@@ -699,25 +784,39 @@ function Dashboard({
 function Metric({
   value,
   label,
-  attention,
+  tone,
+  icon,
+  selected,
+  onClick,
 }: {
   value: number;
   label: string;
-  attention?: boolean;
+  tone: 'navy' | 'blue' | 'amber' | 'red';
+  icon: React.ReactNode;
+  selected: boolean;
+  onClick: () => void;
 }) {
   return (
-    <div className={`metric ${attention ? 'attention' : ''}`}>
-      <b>{value}</b>
-      <span>{label}</span>
-    </div>
+    <button
+      type="button"
+      className={`metric metric-${tone} ${selected ? 'selected' : ''}`}
+      onClick={onClick}
+      aria-pressed={selected}
+      aria-label={`${label}: ${value}. Filter dashboard`}
+    >
+      <span className="metric-icon">{icon}</span>
+      <span className="metric-copy"><b>{value}</b><span>{label}</span></span>
+    </button>
   );
 }
 function PractitionerRow({
   p,
   go,
+  deletePractitioner,
 }: {
   p: ManagedPractitioner;
   go: (v: string, id?: string) => void;
+  deletePractitioner: (p: ManagedPractitioner) => Promise<boolean>;
 }) {
   const req = evaluateRequirements(p),
     pct = req.length
@@ -726,8 +825,13 @@ function PractitionerRow({
     action = p.cases.some((c) => c.status === 'information_requested'),
     active = p.cases.some((c) => !['approved', 'denied'].includes(c.status));
   return (
-    <button className="practitioner-row" onClick={() => go('overview', p.id)}>
-      <span className="person">
+    <div className="practitioner-row">
+      <button
+        type="button"
+        className="practitioner-row-link"
+        onClick={() => go('overview', p.id)}
+      >
+        <span className="person">
         <i>
           {p.practitioner?.firstName[0]}
           {p.practitioner?.lastName[0]}
@@ -740,8 +844,8 @@ function PractitionerRow({
           <small>NPI {p.practitioner?.npi}</small>
         </span>
       </span>
-      <span>{p.selectedOrganizations.length}</span>
-      <span>
+        <span>{p.selectedOrganizations.length}</span>
+        <span>
         <Status
           text={
             p.submittedAt
@@ -750,10 +854,10 @@ function PractitionerRow({
                 ? 'Ready for review'
                 : `${pct}% complete`
           }
-          tone={p.submittedAt ? 'green' : 'blue'}
+          tone={p.submittedAt || pct === 100 ? 'green' : 'red'}
         />
-      </span>
-      <span>
+        </span>
+        <span>
         <Status
           text={
             action
@@ -764,18 +868,77 @@ function PractitionerRow({
                   ? 'Complete (Simulation)'
                   : 'Not started'
           }
-          tone={action ? 'amber' : active ? 'blue' : 'neutral'}
+          tone={action ? 'red' : active ? 'blue' : 'neutral'}
         />
-      </span>
-      <span className="next">
+        </span>
+        <span className="next">
         {action
           ? 'Upload document'
           : p.submittedAt
             ? 'View status'
             : 'Continue'}
         <ChevronRight size={14} />
-      </span>
-    </button>
+        </span>
+      </button>
+      <DeletePractitionerDialog
+        practitioner={p}
+        onDelete={deletePractitioner}
+      />
+    </div>
+  );
+}
+
+function DeletePractitionerDialog({
+  practitioner,
+  onDelete,
+}: {
+  practitioner: ManagedPractitioner;
+  onDelete: (p: ManagedPractitioner) => Promise<boolean>;
+}) {
+  const [open, setOpen] = useState(false),
+    [busy, setBusy] = useState(false),
+    name = `${practitioner.practitioner?.firstName ?? ''} ${practitioner.practitioner?.lastName ?? ''}`.trim();
+  async function remove() {
+    setBusy(true);
+    if (await onDelete(practitioner)) setOpen(false);
+    setBusy(false);
+  }
+  return (
+    <AlertDialog open={open} onOpenChange={setOpen}>
+      <AlertDialogTrigger
+        render={
+          <button
+            type="button"
+            className="row-delete-button"
+            aria-label={`Delete ${name}`}
+            title={`Delete ${name}`}
+          />
+        }
+      >
+        <Trash2 size={16} />
+      </AlertDialogTrigger>
+      <AlertDialogContent className="delete-dialog">
+        <AlertDialogHeader>
+          <AlertDialogMedia className="delete-dialog-icon"><Trash2 /></AlertDialogMedia>
+          <AlertDialogTitle>Delete {name}?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This permanently removes the practitioner, application progress,
+            credentialing cases, and uploaded documents from this workspace.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={busy}>Keep practitioner</AlertDialogCancel>
+          <AlertDialogAction
+            className="danger-confirm"
+            disabled={busy}
+            onClick={() => void remove()}
+          >
+            {busy && <LoaderCircle size={14} className="loading-spinner" />}
+            Delete practitioner
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 
@@ -908,7 +1071,7 @@ function PractitionerWizard({
             </p>
             <div className="fetch-stages">
               <span><Check size={14} /> NPI validated</span>
-              <span><LoaderCircle size={14} className="animate-spin" /> Matching sources</span>
+              <span><LoaderCircle size={14} className="loading-spinner" /> Matching sources</span>
               <span>Preparing missing items</span>
             </div>
           </output>
@@ -958,7 +1121,7 @@ function PractitionerWizard({
                 {error && <div className="error"><AlertCircle size={16} />{error}</div>}
                 <div className="wizard-actions end">
                   <button className="primary-button roomy" onClick={() => void validateNpi()} disabled={busy || npi.length !== 10}>
-                    {busy ? <LoaderCircle size={16} className="animate-spin" /> : <Search size={16} />}
+                    {busy ? <LoaderCircle size={16} className="loading-spinner" /> : <Search size={16} />}
                     Validate NPI
                   </button>
                 </div>
@@ -1057,6 +1220,14 @@ function Workspace({
   }
   function toggleOrg(org: string) {
     const on = p.selectedOrganizations.includes(org);
+    if (on && p.submittedAt) {
+      notify('Submitted organizations can’t be removed from this application.');
+      return;
+    }
+    if (on && p.selectedOrganizations.length === 1) {
+      notify('Keep at least one organization on the application.');
+      return;
+    }
     save({
       ...p,
       selectedOrganizations: on
@@ -1403,7 +1574,7 @@ function Overview({
   return (
     <div className="overview-grid">
       <div className="space-y-5">
-        <section className="surface readiness-card">
+        <section className={`surface readiness-card ${missing.length ? 'needs-attention' : ''}`}>
           <div>
             <p className="eyebrow">Application readiness</p>
             <h2>{pct}% complete</h2>
@@ -1414,7 +1585,7 @@ function Overview({
             </p>
           </div>
           <div
-            className="ring"
+            className={`ring ${missing.length ? 'warning' : ''}`}
             style={{ '--pct': `${pct * 3.6}deg` } as React.CSSProperties}
           >
             <span>{pct}%</span>
@@ -1439,7 +1610,11 @@ function Overview({
           {missing.length ? (
             <div className="task-list">
               {missing.slice(0, 5).map((r) => (
-                <button key={r.id} onClick={() => go('onboarding', p.id)}>
+                <button
+                  className="missing-task"
+                  key={r.id}
+                  onClick={() => go('onboarding', p.id)}
+                >
                   <span>
                     <ClipboardCheck size={15} />
                   </span>
@@ -1485,7 +1660,7 @@ function Overview({
                   ),
                   left = orgReq.filter((r) => !r.satisfied).length;
                 return (
-                  <div key={o.id}>
+                  <div className={left ? 'org-needs-attention' : 'org-ready'} key={o.id}>
                     <span className="org-mark">
                       <Building2 size={15} />
                     </span>
@@ -1498,8 +1673,18 @@ function Overview({
                       </small>
                     </div>
                     <Status
-                      text={left ? 'In progress' : 'Ready'}
-                      tone={left ? 'blue' : 'green'}
+                      text={left ? `${left} remaining` : 'Ready'}
+                      tone={left ? 'red' : 'green'}
+                    />
+                    <RemoveOrganizationDialog
+                      organizationName={o.name}
+                      disabled={Boolean(p.submittedAt) || p.selectedOrganizations.length === 1}
+                      disabledReason={
+                        p.submittedAt
+                          ? 'Submitted organizations cannot be removed'
+                          : 'At least one organization is required'
+                      }
+                      onRemove={() => toggleOrg(o.id)}
                     />
                   </div>
                 );
@@ -1589,6 +1774,59 @@ function Overview({
   );
 }
 
+function RemoveOrganizationDialog({
+  organizationName,
+  disabled,
+  disabledReason,
+  onRemove,
+}: {
+  organizationName: string;
+  disabled: boolean;
+  disabledReason: string;
+  onRemove: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <AlertDialog open={open} onOpenChange={setOpen}>
+      <AlertDialogTrigger
+        disabled={disabled}
+        render={
+          <button
+            type="button"
+            className="remove-org-button"
+            aria-label={`Remove ${organizationName}`}
+            title={disabled ? disabledReason : `Remove ${organizationName}`}
+          />
+        }
+      >
+        <X size={14} />
+      </AlertDialogTrigger>
+      <AlertDialogContent className="delete-dialog">
+        <AlertDialogHeader>
+          <AlertDialogMedia className="remove-org-dialog-icon"><Building2 /></AlertDialogMedia>
+          <AlertDialogTitle>Remove {organizationName}?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Its requirements will be removed from readiness and your completion
+            score will be recalculated immediately. Your shared profile stays intact.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Keep organization</AlertDialogCancel>
+          <AlertDialogAction
+            className="danger-confirm"
+            onClick={() => {
+              onRemove();
+              setOpen(false);
+            }}
+          >
+            Remove organization
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
 function Onboarding({
   p,
   reqs,
@@ -1602,17 +1840,8 @@ function Onboarding({
   upload: (e: React.ChangeEvent<HTMLInputElement>, t?: string) => void;
   go: (v: string, id?: string) => void;
 }) {
-  const sections = [
-      'Professional details',
-      'Education',
-      'License',
-      'Practice',
-      'Affiliations',
-      'Coverage',
-      'Documents',
-      'Disclosures',
-    ] as const,
-    [activeSection, setActiveSection] = useState<(typeof sections)[number]>(
+  const sections = onboardingSections(p),
+    [activeSection, setActiveSection] = useState<OnboardingSection>(
       'Professional details',
     ),
     activeIndex = sections.indexOf(activeSection),
@@ -1629,9 +1858,7 @@ function Onboarding({
           <i style={{ width: `${pct}%` }} />
         </div>
         {sections.map((section) => {
-          const done = !reqs.some(
-            (r) => r.category === section && !r.satisfied,
-          );
+          const done = isOnboardingSectionComplete(p, section);
           return (
             <button
               type="button"
@@ -1674,7 +1901,7 @@ function Onboarding({
           </span>
         </section>
         {activeSection !== 'Documents' && (
-        <section className="surface panel onboarding-section">
+        <section key={activeSection} className="surface panel onboarding-section">
           <p className="eyebrow">Step {activeIndex + 1} of {sections.length}</p>
           <h2>{activeSection}</h2>
           <p className="panel-copy">
@@ -1762,7 +1989,7 @@ function Onboarding({
         </section>
         )}
         {activeSection === 'Documents' && (
-        <section className="surface panel onboarding-section">
+        <section key={activeSection} className="surface panel onboarding-section">
           <p className="eyebrow">Step {activeIndex + 1} of {sections.length}</p>
           <h2>Supporting documents</h2>
           <p className="panel-copy">
@@ -2260,7 +2487,7 @@ function Status({
   tone,
 }: {
   text: string;
-  tone: 'green' | 'blue' | 'amber' | 'neutral' | 'purple';
+  tone: 'green' | 'blue' | 'amber' | 'red' | 'neutral' | 'purple';
 }) {
   return <span className={`status-pill ${tone}`}>{text}</span>;
 }

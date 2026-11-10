@@ -1,5 +1,53 @@
 import type { DemoState } from "./domain";
 
+export type OnboardingSection =
+  | "Professional details"
+  | "Education"
+  | "License"
+  | "Practice"
+  | "Documents"
+  | "Affiliations"
+  | "Coverage"
+  | "Disclosures";
+
+export function onboardingSections(state: DemoState): OnboardingSection[] {
+  const sections: OnboardingSection[] = [
+    "Professional details",
+    "Education",
+    "License",
+    "Practice",
+    "Documents",
+  ];
+  if (state.selectedOrganizations.includes("evergreen")) {
+    sections.push("Affiliations", "Coverage", "Disclosures");
+  }
+  return sections;
+}
+
+export function isOnboardingSectionComplete(
+  state: DemoState,
+  section: OnboardingSection,
+): boolean {
+  switch (section) {
+    case "Professional details":
+      return Boolean(state.profile.degree);
+    case "Education":
+      return Boolean(state.profile.education && state.profile.graduationYear);
+    case "License":
+      return Boolean(state.profile.licenseState && state.profile.licenseNumber);
+    case "Practice":
+      return Boolean(state.profile.practiceAddress);
+    case "Documents":
+      return state.documents.some((document) => document.type === "license");
+    case "Affiliations":
+      return Boolean(state.profile.hospitalAffiliation);
+    case "Coverage":
+      return Boolean(state.profile.malpracticeCarrier);
+    case "Disclosures":
+      return Boolean(state.profile.disclosure);
+  }
+}
+
 export interface Requirement { id: string; label: string; category: string; organizationIds: string[]; satisfied: boolean; field?: keyof DemoState["profile"]; documentType?: string }
 
 export function evaluateRequirements(state: DemoState): Requirement[] {
