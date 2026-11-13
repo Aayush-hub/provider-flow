@@ -28,10 +28,10 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   try {
-    const { text, totalPages } = await extractText(
+    const { text: pageTexts, totalPages } = await extractText(
         new Uint8Array(await file.arrayBuffer()),
-        { mergePages: true },
       ),
+      text = pageTexts.join('\n'),
       result = extractCvCandidates(text, documentId);
     if (!text.trim())
       return NextResponse.json(

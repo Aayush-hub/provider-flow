@@ -32,6 +32,29 @@ LICENSES
 California Medical License A123456
 `;
 
+const uploadedMayaCvLayout = `
+Dr. Maya Patel
+MD | Internal Medicine | NPI: 1440001000 (DEMO FIXTURE)
+
+EDUCATION
+Doctor of Medicine (MD) | 2012 - 2016
+Lakeview School of Medicine (fictional), Portland, OR
+Bachelor of Science, Biology | 2008 - 2012
+North Valley College (fictional), Eugene, OR
+
+POSTGRADUATE TRAINING
+Internal Medicine Residency | July 2016 - June 2019
+Riverside Bay Medical Center (fictional), Seattle, WA
+
+PROFESSIONAL EXPERIENCE
+Attending Physician, Internal Medicine | September 2022 - Present
+Harborpoint Community Medicine (fictional), Austin, TX.
+
+PROFESSIONAL LICENSURE
+Texas Medical License | Self-reported
+License number: DEMO-TX-20491. Status: practitioner-reported active.
+`;
+
 function practitioner(): ManagedPractitioner {
   const lookup = demoLookup(demoNpis.maya)!;
   return normalizePractitioner({
@@ -126,6 +149,27 @@ describe('deterministic CV extraction', () => {
         (item) => item.kind === 'license' && item.value === 'A123456',
       ),
     ).toBe(true);
+  });
+
+  it('extracts medical education when degree and institution are on separate lines', () => {
+    const result = extractCvCandidates(uploadedMayaCvLayout, 'uploaded-maya-cv');
+    const education = result.candidates.find(
+      (item) => item.kind === 'education',
+    );
+
+    expect(education?.value).toContain('Lakeview School of Medicine');
+    expect(education?.details).toMatchObject({
+      degree: 'MD',
+      graduationYear: '2016',
+    });
+    expect(
+      result.candidates.filter((item) => item.kind === 'education'),
+    ).toHaveLength(1);
+    expect(
+      result.candidates.filter(
+        (item) => item.kind === 'license' && item.value === 'DEMO-TX-20491',
+      ),
+    ).toHaveLength(1);
   });
 });
 

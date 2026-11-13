@@ -82,13 +82,23 @@ function sectionFor(line: string) {
   )
     return 'training';
   if (
-    /^(professional experience|employment|work experience|experience)$/.test(
+    /^(professional experience|employment|work experience|experience)$/.test(normalized)
+  )
+    return 'employment';
+  if (
+    /^(licenses|licensure|medical licenses|professional licensure)$/.test(
       normalized,
     )
   )
-    return 'employment';
-  if (/^(licenses|licensure|medical licenses)$/.test(normalized))
     return 'license';
+  if (/^(practice locations|practice location)$/.test(normalized))
+    return 'practice';
+  if (
+    /^(professional summary|additional information|document status)$/.test(
+      normalized,
+    )
+  )
+    return 'other';
   return null;
 }
 
@@ -106,11 +116,18 @@ export function extractCvCandidates(
   let section = '';
   let index = 0;
 
-  const firstLine = lines
-    .slice(0, 4)
-    .find((line) => /(?:,|\s)(?:M\.?D\.?|D\.?O\.?)\b/i.test(line));
-  if (firstLine) {
-    const name = firstLine.replace(/,?\s+(?:M\.?D\.?|D\.?O\.?).*$/i, '').trim();
+  const nameLine = lines.slice(0, 8).find(
+    (line) =>
+      /(?:,|\s)(?:M\.?D\.?|D\.?O\.?)\b/i.test(line) ||
+      /^(?:Dr\.?\s+)?[A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){1,3}$/.test(
+        line,
+      ),
+  );
+  if (nameLine) {
+    const name = nameLine
+      .replace(/^Dr\.?\s+/i, '')
+      .replace(/,?\s+(?:M\.?D\.?|D\.?O\.?).*$/i, '')
+      .trim();
     if (name.split(' ').length >= 2) {
       candidates.push(
         candidate(
@@ -158,14 +175,26 @@ export function extractCvCandidates(
     const range = parseDateRange(line);
 
     if (section === 'education') {
-      const school =
-        /(?:school|college|university).*(?:medicine|medical)|(?:medicine|medical).*(?:school|college|university)/i.test(
-          line,
+      const previousLine = lines[lineIndex - 1] ?? '';
+      const nextLine = lines[lineIndex + 1] ?? '';
+      const institutionLine = /\b(school|college|university)\b/i.test(line);
+      const medicalContext = [previousLine, line, nextLine].some((value) =>
+        /\b(medicine|medical|M\.?D\.?|D\.?O\.?)\b/i.test(value),
+      );
+      if (institutionLine && medicalContext) {
+        const degreeLine = [previousLine, line, nextLine].find((value) =>
+          /\b(Doctor of Medicine|Doctor of Osteopathic Medicine|M\.?D\.?|D\.?O\.?)\b/i.test(
+            value,
+          ),
         );
-      if (school) {
-        const graduation = [line, lines[lineIndex + 1] ?? '']
-          .join(' ')
-          .match(/\b(19|20)\d{2}\b/);
+        const graduationYears = (degreeLine ?? line).match(/\b(?:19|20)\d{2}\b/g);
+        const graduationYear = graduationYears?.at(-1) ?? '';
+        const institution = line
+          .replace(
+            /\s*[|,]\s*(?:M\.?D\.?|Doctor of Medicine|D\.?O\.?|Doctor of Osteopathic Medicine).*$/i,
+            '',
+          )
+          .trim();
         candidates.push(
           candidate(
             index++,
@@ -173,18 +202,14 @@ export function extractCvCandidates(
               canonicalKey: 'education.medical_school',
               kind: 'education',
               label: 'Medical school',
-              value: line.replace(
-                /\s*[|,]\s*(?:M\.?D\.?|Doctor of Medicine).*$/i,
-                '',
-              ),
+              value: institution,
               confidence: 'high',
               details: {
-                institution: line.replace(
-                  /\s*[|,]\s*(?:M\.?D\.?|Doctor of Medicine).*$/i,
-                  '',
-                ),
-                degree: /D\.?O\.?|osteopathic/i.test(line) ? 'DO' : 'MD',
-                graduationYear: graduation?.[0] ?? '',
+                institution,
+                degree: /\bD\.?O\.?\b|osteopathic/i.test(degreeLine ?? line)
+                  ? 'DO'
+                  : 'MD',
+                graduationYear,
               },
             },
             sourceDocumentId,
@@ -210,7 +235,15 @@ export function extractCvCandidates(
       const category = section === 'training' ? trainingType : 'employment';
       const title =
         parts[0] ?? (category === 'employment' ? 'Position' : category);
-      const organization = parts[1] ?? parts[0] ?? '';
+      const followingLine = lines[lineIndex + 1] ?? '';
+      const followingOrganization =
+        /\b(center|clinic|hospital|medicine|medical|practice|group)\b/i.test(
+          followingLine,
+        )
+          ? followingLine.split(/\.\s/)[0]
+          : '';
+      const organization =
+        followingOrganization || parts[1] || parts[0] || '';
       const possibleAddress = lines[lineIndex + 1] ?? '';
       const address = /\d+\s+.+\b[A-Z]{2}\s+\d{5}\b/.test(possibleAddress)
         ? possibleAddress
@@ -245,11 +278,19 @@ export function extractCvCandidates(
     }
 
     if (section === 'license') {
-      const state = line.match(
+      const licenseContext = `${line} ${lines[lineIndex + 1] ?? ''}`;
+      const state = licenseContext.match(
         /\b([A-Z]{2}|California|Illinois|Wisconsin|Texas|Washington)\b/,
       );
-      const number = line.match(
-        /(?:license|licence|number|#)\s*[:#-]?\s*([A-Z0-9.-]{5,})/i,
+      const number =
+        licenseContext.match(
+          /(?:license|licence)\s*(?:number|#)\s*[:#-]?\s*([A-Z0-9.-]{5,})/i,
+        ) ??
+        licenseContext.match(
+          /(?:number|#)\s*[:#-]?\s*([A-Z0-9.-]{5,})/i,
+        ) ??
+        line.match(
+          /(?:medical\s+)?(?:license|licence)\s*[:#-]?\s*([A-Z0-9.-]{5,})/i,
       );
       if (state && number) {
         const stateMap: Record<string, string> = {
@@ -260,6 +301,14 @@ export function extractCvCandidates(
           Washington: 'WA',
         };
         const stateCode = stateMap[state[1]] ?? state[1];
+        const licenseNumber = number[1].replace(/\.+$/, '');
+        if (
+          candidates.some(
+            (item) =>
+              item.kind === 'license' && item.value === licenseNumber,
+          )
+        )
+          continue;
         candidates.push(
           candidate(
             index++,
@@ -267,11 +316,11 @@ export function extractCvCandidates(
               canonicalKey: `license.${stateCode.toLowerCase()}`,
               kind: 'license',
               label: `${stateCode} medical license`,
-              value: number[1],
+              value: licenseNumber,
               confidence: 'high',
               details: {
                 state: stateCode,
-                licenseNumber: number[1],
+                licenseNumber,
                 licenseType: 'MD',
                 expirationDate: '',
               },
