@@ -50,6 +50,10 @@ import {
   type OnboardingSection,
 } from '@/lib/requirements';
 import { isValidNpi } from '@/lib/npi';
+import { DEMO_DATA_MODE, demoNpis } from '@/lib/demo-data';
+import { detectCareerGaps, monthYear } from '@/lib/career';
+import { acquisitionImpact, nextBestAction } from '@/lib/acquisition-insights';
+import { organizationName } from '@/lib/field-mappings';
 import { conflictsFromLookup } from '@/lib/acquisition';
 import {
   historiesFor,
@@ -60,6 +64,8 @@ import {
   type AccountState,
   type AffiliationHistory,
   type CaseStatus,
+  type CareerEntry,
+  type ExtractedCandidate,
   type ManagedPractitioner,
   type PracticeHistory,
   type PractitionerLookup,
@@ -1077,11 +1083,12 @@ function PractitionerWizard({
     [last, setLast] = useState(''),
     [email, setEmail] = useState(''),
     [caqh, setCaqh] = useState(''),
-    [selected, setSelected] = useState<string[]>([]);
+    [selected, setSelected] = useState<string[]>([]),
+    [manualAvailable, setManualAvailable] = useState(false);
 
   async function validateNpi() {
     setError('');
-    if (!isValidNpi(npi)) {
+    if (!/^\d{10}$/.test(npi) || (!DEMO_DATA_MODE && !isValidNpi(npi))) {
       setError('Enter a valid 10-digit individual NPI.');
       return;
     }
@@ -1094,9 +1101,13 @@ function PractitionerWizard({
       const response = await fetch(`/api/npi/${npi}`);
       const body = (await response.json()) as
         | PractitionerLookup
-        | { error: string };
-      if (!response.ok || 'error' in body)
+        | { error: string; kind?: string };
+      if (!response.ok || 'error' in body) {
+        if ('kind' in body && body.kind === 'no_demo_match')
+          setManualAvailable(true);
         throw new Error('error' in body ? body.error : 'Lookup failed');
+      }
+      setManualAvailable(false);
       setLookup(body);
       setFirst(body.firstName);
       setLast(body.lastName);
@@ -1106,6 +1117,42 @@ function PractitionerWizard({
     } finally {
       setBusy(false);
     }
+  }
+
+  function beginManualEntry() {
+    const retrievedAt = now();
+    setLookup({
+      npi,
+      firstName: '',
+      lastName: '',
+      deactivated: false,
+      demoScenario: 'manual',
+      addresses: [],
+      taxonomies: [],
+      nppes: {
+        source: 'Manual entry',
+        status: 'not_found',
+        live: false,
+        classification: 'practitioner_asserted',
+        retrievedAt,
+        reference: 'No demonstration record available',
+        facts: { factCount: 0 },
+        warning: 'No public or simulated identity match was created.',
+      },
+      cms: {
+        source: 'Manual entry',
+        status: 'not_found',
+        live: false,
+        classification: 'practitioner_asserted',
+        retrievedAt,
+        reference: 'No demonstration record available',
+        facts: { rows: [] },
+      },
+    });
+    setFirst('');
+    setLast('');
+    setError('');
+    setStep(2);
   }
 
   function createPractitioner() {
@@ -1148,18 +1195,15 @@ function PractitionerWizard({
                 },
               ]
             : [],
-        licenses:
-          profile.licenseState || profile.licenseNumber
-            ? [
-                {
-                  id: uid(),
-                  state: profile.licenseState,
-                  licenseNumber: profile.licenseNumber,
-                  licenseType: profile.degree,
-                  expirationDate: '',
-                },
-              ]
-            : [],
+        licenses: lookup.taxonomies
+          .filter((taxonomy) => taxonomy.state || taxonomy.license)
+          .map((taxonomy) => ({
+            id: uid(),
+            state: taxonomy.state ?? '',
+            licenseNumber: taxonomy.license ?? '',
+            licenseType: profile.degree,
+            expirationDate: '',
+          })),
         practices: profile.practiceAddress
           ? [
               {
@@ -1183,6 +1227,14 @@ function PractitionerWizard({
         })),
       },
       dataConflicts = conflictsFromLookup(lookup),
+      importedFacts = [
+        ['identity.npi', lookup.npi],
+        ['identity.name', `${first} ${last}`.trim()],
+        ['professional.degree', profile.degree],
+        ['license.active', profile.licenseNumber],
+        ['practice.primary_address', profile.practiceAddress],
+        ['education.medical_school', profile.education],
+      ].filter((item) => item[1]),
       practitioner: ManagedPractitioner = {
         id,
         role: 'provider',
@@ -1193,12 +1245,46 @@ function PractitionerWizard({
         profile,
         histories,
         dataConflicts,
+        extractedCandidates: [],
+        careerTimeline: [],
+        careerGaps: [],
+        factProvenance: importedFacts.map(([canonicalKey, value]) => ({
+          id: uid(),
+          canonicalKey,
+          value,
+          source:
+            lookup.demoScenario === 'manual'
+              ? 'Practitioner manual entry'
+              : lookup.nppes.source,
+          classification:
+            lookup.demoScenario === 'manual' ? 'manual_entry' : 'demo_imported',
+          recordedAt: now(),
+        })),
+        acquisitionEvents: [
+          {
+            id: uid(),
+            type:
+              lookup.demoScenario === 'manual' ? 'manual_entry' : 'demo_import',
+            canonicalKeys: importedFacts.map(([canonicalKey]) => canonicalKey),
+            source:
+              lookup.demoScenario === 'manual'
+                ? 'Practitioner manual entry'
+                : lookup.nppes.source,
+            occurredAt: now(),
+          },
+        ],
         submissions: [],
         documents: [],
         attested: false,
         cases: [],
         audit: [
-          { action: 'Practitioner created from public NPI data', at: now() },
+          {
+            action:
+              lookup.demoScenario === 'manual'
+                ? 'Practitioner created with manual entry'
+                : 'Practitioner created from fictional demonstration data',
+            at: now(),
+          },
         ],
         createdAt: now(),
         updatedAt: now(),
@@ -1302,16 +1388,27 @@ function PractitionerWizard({
                 </label>
                 <p id="npi-help" className="field-help">
                   For this prototype, try example NPI{' '}
-                  <button onClick={() => setNpi('1003000126')}>
-                    1003000126
+                  <button onClick={() => setNpi(demoNpis.maya)}>
+                    {demoNpis.maya}
                   </button>
-                  .
+                  . Simulated records are clearly labeled and no healthcare API
+                  is called in demo mode.
                 </p>
                 {error && (
                   <div className="error">
                     <AlertCircle size={16} />
                     {error}
                   </div>
+                )}
+                {manualAvailable && (
+                  <button
+                    type="button"
+                    className="manual-fallback"
+                    onClick={beginManualEntry}
+                  >
+                    Continue with manual entry
+                    <ArrowRight size={14} />
+                  </button>
                 )}
                 <div className="wizard-actions end">
                   <button
@@ -1337,13 +1434,19 @@ function PractitionerWizard({
                     <CheckCircle2 size={20} />
                   </span>
                   <div>
-                    <small>NPI record matched</small>
+                    <small>
+                      {lookup.demoScenario === 'manual'
+                        ? 'Manual practitioner record'
+                        : 'Fictional demonstration record matched'}
+                    </small>
                     <h2>
-                      {lookup.firstName} {lookup.lastName}, {lookup.credential}
+                      {lookup.firstName || 'New'}{' '}
+                      {lookup.lastName || 'practitioner'}
+                      {lookup.credential ? `, ${lookup.credential}` : ''}
                     </h2>
                     <p>
-                      {primaryTaxonomy?.description ?? 'Specialty unavailable'}{' '}
-                      · {location?.city}, {location?.state}
+                      {primaryTaxonomy?.description ?? 'Specialty unavailable'}
+                      {location ? ` · ${location.city}, ${location.state}` : ''}
                     </p>
                   </div>
                   <b>NPI {lookup.npi}</b>
@@ -1482,6 +1585,7 @@ function Workspace({
   go: Navigate;
   notify: (s: string) => void;
 }) {
+  const [recentlyAddedOrg, setRecentlyAddedOrg] = useState('');
   const pendingOrganizations = pendingOrganizationIds(p),
     submittedOrganizations = submittedOrganizationIds(p),
     requirementOrganizations = pendingOrganizations.length
@@ -1496,11 +1600,49 @@ function Workspace({
     key: keyof ManagedPractitioner['profile'],
     value: string,
   ) {
+    const recordedAt = now(),
+      canonicalKey =
+        (
+          {
+            degree: 'professional.degree',
+            licenseState: 'license.state',
+            licenseNumber: 'license.active',
+            practiceAddress: 'practice.primary_address',
+            education: 'education.medical_school',
+            graduationYear: 'education.graduation_year',
+            malpracticeCarrier: 'coverage.malpractice',
+            hospitalAffiliation: 'affiliation.hospital',
+            disclosure: 'disclosure.evergreen',
+          } as Record<string, string>
+        )[key] ?? key;
     save({
       ...p,
       profile: { ...p.profile, [key]: value },
+      factProvenance: [
+        ...(p.factProvenance ?? []).filter(
+          (item) => item.canonicalKey !== canonicalKey,
+        ),
+        {
+          id: uid(),
+          canonicalKey,
+          value,
+          source: 'Practitioner manual entry',
+          classification: 'manual_entry',
+          recordedAt,
+        },
+      ],
+      acquisitionEvents: [
+        ...(p.acquisitionEvents ?? []),
+        {
+          id: uid(),
+          type: 'manual_entry',
+          canonicalKeys: [canonicalKey],
+          source: 'Practitioner manual entry',
+          occurredAt: recordedAt,
+        },
+      ],
       attested: false,
-      updatedAt: now(),
+      updatedAt: recordedAt,
     });
   }
   function updateHistories(histories: ProviderHistories) {
@@ -1509,7 +1651,15 @@ function Workspace({
       primaryLicense = histories.licenses[0],
       currentAffiliation =
         histories.affiliations.find((item) => item.current) ??
-        histories.affiliations[0];
+        histories.affiliations[0],
+      recordedAt = now(),
+      manualFacts = [
+        ['education.medical_school', primaryEducation?.institution ?? ''],
+        ['license.active', primaryLicense?.licenseNumber ?? ''],
+        ['practice.primary_address', currentPractice?.address ?? ''],
+        ['affiliation.hospital', currentAffiliation?.hospital ?? ''],
+      ].filter((item) => item[1]),
+      manualKeys = new Set(manualFacts.map(([canonicalKey]) => canonicalKey));
     save({
       ...p,
       histories,
@@ -1522,13 +1672,39 @@ function Workspace({
         practiceAddress: currentPractice?.address ?? '',
         hospitalAffiliation: currentAffiliation?.hospital ?? '',
       },
+      factProvenance: [
+        ...(p.factProvenance ?? []).filter(
+          (item) => !manualKeys.has(item.canonicalKey),
+        ),
+        ...manualFacts.map(([canonicalKey, value]) => ({
+          id: uid(),
+          canonicalKey,
+          value,
+          source: 'Practitioner manual entry',
+          classification: 'manual_entry' as const,
+          recordedAt,
+        })),
+      ],
       attested: false,
-      updatedAt: now(),
+      updatedAt: recordedAt,
     });
   }
-  function resolveConflict(conflictId: string, optionId: string) {
+  function resolveConflict(
+    conflictId: string,
+    optionId: string,
+    customValue?: string,
+  ) {
     const conflict = p.dataConflicts?.find((item) => item.id === conflictId),
-      option = conflict?.options.find((item) => item.id === optionId);
+      customOption = customValue?.trim()
+        ? {
+            id: optionId,
+            value: customValue.trim(),
+            source: 'Practitioner entered',
+            retrievedAt: now(),
+          }
+        : undefined,
+      option =
+        customOption ?? conflict?.options.find((item) => item.id === optionId);
     if (!conflict || !option) return;
     const resolvedAt = now(),
       histories = historiesFor(p),
@@ -1578,9 +1754,41 @@ function Workspace({
       histories: nextHistories,
       dataConflicts: (p.dataConflicts ?? []).map((item) =>
         item.id === conflictId
-          ? { ...item, selectedOptionId: optionId, resolvedAt }
+          ? {
+              ...item,
+              options: customOption
+                ? [...item.options, customOption]
+                : item.options,
+              historicalEvidence: item.historicalEvidence ?? item.options,
+              selectedOptionId: optionId,
+              resolvedAt,
+            }
           : item,
       ),
+      factProvenance: [
+        ...(p.factProvenance ?? []).filter(
+          (item) =>
+            item.canonicalKey !== (conflict.canonicalKey ?? conflict.fieldKey),
+        ),
+        {
+          id: uid(),
+          canonicalKey: conflict.canonicalKey ?? conflict.fieldKey,
+          value: option.value,
+          source: option.source,
+          classification: 'provider_confirmed',
+          recordedAt: resolvedAt,
+        },
+      ],
+      acquisitionEvents: [
+        ...(p.acquisitionEvents ?? []),
+        {
+          id: uid(),
+          type: 'conflict_resolution',
+          canonicalKeys: [conflict.canonicalKey ?? conflict.fieldKey],
+          source: option.source,
+          occurredAt: resolvedAt,
+        },
+      ],
       attested: false,
       audit: [
         ...p.audit,
@@ -1603,14 +1811,31 @@ function Workspace({
       notify('Keep at least one organization on the application.');
       return;
     }
-    save({
-      ...p,
-      selectedOrganizations: on
+    const nextSelected = on
         ? p.selectedOrganizations.filter((x) => x !== org)
         : [...p.selectedOrganizations, org],
+      reusableKeys = evaluateRequirements(p, [org])
+        .filter((requirement) => requirement.satisfied)
+        .map((requirement) => requirement.canonicalKey ?? requirement.id);
+    save({
+      ...p,
+      selectedOrganizations: nextSelected,
+      acquisitionEvents: on
+        ? p.acquisitionEvents
+        : [
+            ...(p.acquisitionEvents ?? []),
+            {
+              id: uid(),
+              type: 'record_reuse',
+              canonicalKeys: reusableKeys,
+              source: `Existing authorized profile reused for ${organizationName(org)}`,
+              occurredAt: now(),
+            },
+          ],
       attested: false,
       updatedAt: now(),
     });
+    setRecentlyAddedOrg(on ? '' : org);
     notify(
       on
         ? 'Organization removed from the draft.'
@@ -1618,6 +1843,298 @@ function Workspace({
           ? 'Organization added. Only its new requirements need review.'
           : 'Organization added. New requirements were calculated.',
     );
+  }
+
+  async function uploadCv(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const documentId = uid(),
+      form = new FormData();
+    form.set('file', file);
+    form.set('documentId', documentId);
+    notify('Reading the text in your CV…');
+    try {
+      const [extractResponse, stored] = await Promise.all([
+          fetch('/api/cv/extract', { method: 'POST', body: form }),
+          persistDocument(file),
+        ]),
+        extraction = (await extractResponse.json()) as {
+          error?: string;
+          candidates?: ExtractedCandidate[];
+        };
+      if (!extractResponse.ok || !extraction.candidates)
+        throw new Error(extraction.error ?? 'Unable to extract the CV.');
+      const occurredAt = now();
+      save({
+        ...p,
+        documents: [
+          ...p.documents,
+          {
+            id: documentId,
+            name: file.name,
+            type: 'cv',
+            status: 'CV extracted locally · provider review required',
+            storagePath: stored.path,
+            size: stored.size,
+            extractionStatus: 'pending_review',
+          },
+        ],
+        extractedCandidates: [
+          ...(p.extractedCandidates ?? []),
+          ...extraction.candidates,
+        ],
+        acquisitionEvents: [
+          ...(p.acquisitionEvents ?? []),
+          {
+            id: uid(),
+            type: 'document_extraction',
+            canonicalKeys: extraction.candidates.map(
+              (candidate) => candidate.canonicalKey,
+            ),
+            source: 'Local text extraction from uploaded CV',
+            occurredAt,
+          },
+        ],
+        audit: [
+          ...p.audit,
+          {
+            action: 'CV parsed locally; candidate facts awaiting review',
+            at: occurredAt,
+          },
+        ],
+        updatedAt: occurredAt,
+      });
+      notify(
+        `${extraction.candidates.length} candidate facts found. Review each before it is added.`,
+      );
+    } catch (error) {
+      notify(error instanceof Error ? error.message : 'CV extraction failed.');
+    } finally {
+      e.target.value = '';
+    }
+  }
+
+  function reviewCandidate(
+    candidateId: string,
+    status: 'accepted' | 'ignored',
+    correctedValue?: string,
+  ) {
+    const candidate = (p.extractedCandidates ?? []).find(
+      (item) => item.id === candidateId,
+    );
+    if (!candidate) return;
+    const value = correctedValue?.trim() || candidate.value,
+      wasCorrected = Boolean(
+        correctedValue?.trim() && correctedValue.trim() !== candidate.value,
+      ),
+      details = { ...candidate.details },
+      reviewedAt = now(),
+      nextCandidates = (p.extractedCandidates ?? []).map((item) =>
+        item.id === candidateId ? { ...item, value, status } : item,
+      );
+    if (status === 'ignored') {
+      save({
+        ...p,
+        extractedCandidates: nextCandidates,
+        updatedAt: reviewedAt,
+      });
+      return;
+    }
+    const profile = { ...p.profile },
+      practitioner = p.practitioner ? { ...p.practitioner } : undefined,
+      dataConflicts = [...(p.dataConflicts ?? [])];
+    let histories = historiesFor(p),
+      careerTimeline = [...(p.careerTimeline ?? [])];
+    if (candidate.kind === 'degree') profile.degree = value;
+    if (candidate.kind === 'identity' && practitioner) {
+      const parts = value.split(/\s+/);
+      practitioner.firstName = parts[0] ?? practitioner.firstName;
+      practitioner.lastName = parts.slice(1).join(' ') || practitioner.lastName;
+    }
+    if (candidate.kind === 'education') {
+      const institution = wasCorrected
+          ? value
+          : String(details.institution ?? value),
+        education = {
+          id: uid(),
+          institution,
+          degree: String(details.degree ?? profile.degree),
+          graduationYear: String(details.graduationYear ?? ''),
+        };
+      if (!histories.education.some((item) => item.institution === institution))
+        histories = {
+          ...histories,
+          education: [...histories.education, education],
+        };
+      profile.education = institution;
+      profile.graduationYear = education.graduationYear;
+    }
+    if (candidate.kind === 'license') {
+      const license = {
+        id: uid(),
+        state: String(details.state ?? ''),
+        licenseNumber: wasCorrected
+          ? value
+          : String(details.licenseNumber ?? value),
+        licenseType: String(details.licenseType ?? profile.degree),
+        expirationDate: String(details.expirationDate ?? ''),
+      };
+      if (
+        !histories.licenses.some(
+          (item) =>
+            item.state === license.state &&
+            item.licenseNumber === license.licenseNumber,
+        )
+      )
+        histories = {
+          ...histories,
+          licenses: [...histories.licenses, license],
+        };
+      profile.licenseState ||= license.state;
+      profile.licenseNumber ||= license.licenseNumber;
+    }
+    if (candidate.kind === 'employment' || candidate.kind === 'training') {
+      const correctedParts = wasCorrected
+        ? value.split('·').map((part) => part.trim())
+        : [];
+      const entry: CareerEntry = {
+        id: uid(),
+        category: (details.category as CareerEntry['category']) ?? 'employment',
+        organization: correctedParts[1] ?? String(details.organization ?? ''),
+        title: correctedParts[0] ?? String(details.title ?? ''),
+        address: String(details.address ?? ''),
+        startDate: String(details.startDate ?? ''),
+        endDate: String(details.endDate ?? ''),
+        current: Boolean(details.current),
+        source: 'Extracted from uploaded CV — Provider Confirmed',
+      };
+      careerTimeline = [...careerTimeline, entry];
+      if (entry.category === 'employment' && entry.address) {
+        histories = {
+          ...histories,
+          practices: [
+            ...histories.practices,
+            {
+              id: uid(),
+              organization: entry.organization,
+              address: entry.address,
+              startYear: entry.startDate.slice(0, 4),
+              endYear: entry.endDate.slice(0, 4),
+              current: entry.current,
+            },
+          ],
+        };
+        if (
+          entry.current &&
+          profile.practiceAddress &&
+          entry.address.toLowerCase() !==
+            profile.practiceAddress.toLowerCase() &&
+          !dataConflicts.some(
+            (conflict) => conflict.canonicalKey === 'practice.primary_address',
+          )
+        ) {
+          dataConflicts.push({
+            id: `cv-practice-address-${candidate.id}`,
+            fieldKey: 'practiceAddress',
+            canonicalKey: 'practice.primary_address',
+            context: 'primary_practice',
+            label: 'Primary practice address',
+            explanation:
+              'A prior fictional record and the confirmed CV report different primary practice addresses. Which is currently correct?',
+            options: [
+              {
+                id: `${candidate.id}-stored`,
+                value: profile.practiceAddress,
+                source: 'Existing fictional demonstration record',
+                retrievedAt: p.updatedAt,
+              },
+              {
+                id: `${candidate.id}-cv`,
+                value: entry.address,
+                source: 'Uploaded CV — Provider Confirmed',
+                retrievedAt: reviewedAt,
+              },
+            ],
+          });
+        }
+      }
+    }
+    const careerGaps = detectCareerGaps(careerTimeline).map((gap) => {
+      const existing = (p.careerGaps ?? []).find((item) => item.id === gap.id);
+      return existing ?? gap;
+    });
+    save({
+      ...p,
+      practitioner,
+      profile,
+      histories,
+      careerTimeline,
+      careerGaps,
+      dataConflicts,
+      extractedCandidates: nextCandidates,
+      factProvenance: [
+        ...(p.factProvenance ?? []).filter(
+          (item) => item.canonicalKey !== candidate.canonicalKey,
+        ),
+        {
+          id: uid(),
+          canonicalKey: candidate.canonicalKey,
+          value,
+          source: 'Extracted from uploaded CV — Provider Confirmed',
+          classification: 'document_extracted',
+          sourceDocumentId: candidate.sourceDocumentId,
+          recordedAt: reviewedAt,
+        },
+      ],
+      documents: p.documents.map((document) =>
+        document.id === candidate.sourceDocumentId &&
+        !nextCandidates.some(
+          (item) =>
+            item.sourceDocumentId === document.id && item.status === 'pending',
+        )
+          ? {
+              ...document,
+              extractionStatus: 'confirmed',
+              status: 'CV extracted locally · provider confirmed',
+            }
+          : document,
+      ),
+      attested: false,
+      audit: [
+        ...p.audit,
+        {
+          action: `Provider confirmed CV candidate: ${candidate.label}`,
+          at: reviewedAt,
+        },
+      ],
+      updatedAt: reviewedAt,
+    });
+  }
+
+  function explainGap(gapId: string, explanation: string) {
+    if (!explanation.trim()) return;
+    const resolvedAt = now();
+    save({
+      ...p,
+      careerGaps: (p.careerGaps ?? []).map((gap) =>
+        gap.id === gapId
+          ? { ...gap, explanation: explanation.trim(), resolvedAt }
+          : gap,
+      ),
+      factProvenance: [
+        ...(p.factProvenance ?? []),
+        {
+          id: uid(),
+          canonicalKey: 'career.gap_explanation',
+          value: explanation.trim(),
+          source: 'Practitioner manual entry',
+          classification: 'manual_entry',
+          recordedAt: resolvedAt,
+        },
+      ],
+      updatedAt: resolvedAt,
+    });
+    notify('Gap explanation saved. Your readiness has been recalculated.');
   }
   async function persistDocument(file: File) {
     const form = new FormData();
@@ -1866,6 +2383,7 @@ function Workspace({
           pct={pct}
           go={go}
           toggleOrg={toggleOrg}
+          recentlyAddedOrg={recentlyAddedOrg}
         />
       )}{' '}
       {view === 'onboarding' && (
@@ -1878,6 +2396,9 @@ function Workspace({
           updateHistories={updateHistories}
           resolveConflict={resolveConflict}
           upload={upload}
+          uploadCv={uploadCv}
+          reviewCandidate={reviewCandidate}
+          explainGap={explainGap}
           go={go}
         />
       )}{' '}
@@ -1922,6 +2443,7 @@ function Overview({
   pct,
   go,
   toggleOrg,
+  recentlyAddedOrg,
 }: {
   p: ManagedPractitioner;
   reqs: ReturnType<typeof evaluateRequirements>;
@@ -1929,9 +2451,18 @@ function Overview({
   pct: number;
   go: Navigate;
   toggleOrg: (id: string) => void;
+  recentlyAddedOrg: string;
 }) {
   const facts = p.practitioner?.nppes.facts.factCount ?? 0,
-    submittedOrganizations = submittedOrganizationIds(p);
+    submittedOrganizations = submittedOrganizationIds(p),
+    nextAction = nextBestAction(p, missing),
+    impact = acquisitionImpact(p, reqs),
+    incrementalRequirements = recentlyAddedOrg
+      ? evaluateRequirements(p, [recentlyAddedOrg])
+      : [],
+    incrementalMissing = incrementalRequirements.filter(
+      (requirement) => !requirement.satisfied,
+    );
   return (
     <div className="overview-grid">
       <div className="space-y-5">
@@ -1943,7 +2474,7 @@ function Overview({
             <h2>{pct}% complete</h2>
             <p>
               {missing.length
-                ? `${missing.length} items require your attention.`
+                ? `${missing.length} item${missing.length === 1 ? '' : 's'} require${missing.length === 1 ? 's' : ''} your attention.`
                 : 'Everything required is ready for review.'}
             </p>
           </div>
@@ -1963,6 +2494,59 @@ function Overview({
             <ArrowRight size={13} />
           </button>
         </section>
+        <section className="surface next-action-card">
+          <span className="next-action-icon">
+            <Sparkles size={18} />
+          </span>
+          <div>
+            <p className="eyebrow">Your next step</p>
+            <h2>{nextAction.label}</h2>
+            <p>{nextAction.detail}</p>
+            <button
+              className="text-button"
+              onClick={() =>
+                nextAction.kind === 'review'
+                  ? go('application', p.id)
+                  : go('onboarding', p.id, nextAction.section)
+              }
+            >
+              Continue <ArrowRight size={13} />
+            </button>
+          </div>
+        </section>
+        {recentlyAddedOrg && (
+          <section className="surface incremental-summary">
+            <CheckCircle2 size={19} />
+            <div>
+              <p className="eyebrow">Organization added</p>
+              <h2>{organizationName(recentlyAddedOrg)}</h2>
+              <p>
+                Your existing profile covers{' '}
+                {incrementalRequirements.length - incrementalMissing.length} of{' '}
+                {incrementalRequirements.length} requirements.{' '}
+                {incrementalMissing.length
+                  ? `${incrementalMissing.length} additional item${incrementalMissing.length === 1 ? '' : 's'} ${incrementalMissing.length === 1 ? 'needs' : 'need'} attention.`
+                  : 'No additional information is needed.'}
+              </p>
+              {incrementalMissing[0] && (
+                <button
+                  className="text-button"
+                  onClick={() =>
+                    go(
+                      'onboarding',
+                      p.id,
+                      onboardingSectionForRequirement(
+                        incrementalMissing[0].category,
+                      ),
+                    )
+                  }
+                >
+                  Complete next requirement <ArrowRight size={13} />
+                </button>
+              )}
+            </div>
+          </section>
+        )}
         <section className="surface panel">
           <div className="panel-head">
             <div>
@@ -2103,31 +2687,62 @@ function Overview({
         )}
       </div>
       <aside className="space-y-5">
-        <section className="surface panel">
-          <h2>Data acquisition</h2>
+        <details className="surface panel impact-details">
+          <summary>
+            <span>
+              <Sparkles size={16} />
+              <b>How we simplified your application</b>
+            </span>
+            <ChevronRight size={14} />
+          </summary>
           <div className="data-stats">
             <div>
-              <b>{facts}</b>
-              <span>Facts acquired</span>
+              <b>{impact.reused}</b>
+              <span>Authorized facts reused</span>
             </div>
             <div>
-              <b>{p.audit.filter((a) => a.action.includes('reused')).length}</b>
-              <span>Facts reused</span>
+              <b>{impact.imported || facts}</b>
+              <span>Demo facts imported</span>
             </div>
             <div>
-              <b>{Object.values(p.profile).filter(Boolean).length}</b>
-              <span>Profile facts present</span>
+              <b>{impact.extracted}</b>
+              <span>CV facts confirmed</span>
             </div>
             <div>
-              <b>{missing.length}</b>
-              <span>Missing required</span>
+              <b>{impact.manual}</b>
+              <span>Facts manually entered</span>
+            </div>
+            <div>
+              <b>{impact.conflictsResolved}</b>
+              <span>Conflicts resolved</span>
+            </div>
+            <div>
+              <b>{impact.outstanding}</b>
+              <span>Outstanding required</span>
+            </div>
+            <div>
+              <b>{impact.duplicateRequestsAvoided}</b>
+              <span>Duplicate requests avoided</span>
             </div>
           </div>
+          <div className="prototype-comparison">
+            <b>Traditional forms vs. Smart Onboarding</b>
+            <small>
+              Prototype comparison calculated from current requirements
+            </small>
+            <span>{impact.baselineQuestions} applicable form requests</span>
+            <span>
+              {impact.satisfiedWithoutNewEntry} satisfied without new entry
+            </span>
+            <span>
+              {impact.remainingProviderQuestions} remaining provider questions
+            </span>
+          </div>
           <p className="source-note">
-            <i />
-            Publicly reported information is not primary-source verification.
+            <i /> Fictional demonstration data and CV-extracted facts are not
+            primary-source verification.
           </p>
-        </section>
+        </details>
         {p.cases.length > 0 && (
           <section className="surface panel">
             <h2>Credentialing summary</h2>
@@ -2217,6 +2832,9 @@ function Onboarding({
   updateHistories,
   resolveConflict,
   upload,
+  uploadCv,
+  reviewCandidate,
+  explainGap,
   go,
 }: {
   p: ManagedPractitioner;
@@ -2224,8 +2842,19 @@ function Onboarding({
   initialSection?: OnboardingSection;
   update: (k: keyof ManagedPractitioner['profile'], v: string) => void;
   updateHistories: (histories: ProviderHistories) => void;
-  resolveConflict: (conflictId: string, optionId: string) => void;
+  resolveConflict: (
+    conflictId: string,
+    optionId: string,
+    customValue?: string,
+  ) => void;
   upload: (e: React.ChangeEvent<HTMLInputElement>, t?: string) => void;
+  uploadCv: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  reviewCandidate: (
+    candidateId: string,
+    status: 'accepted' | 'ignored',
+    correctedValue?: string,
+  ) => void;
+  explainGap: (gapId: string, explanation: string) => void;
   go: Navigate;
 }) {
   const sections = onboardingSections(p),
@@ -2291,6 +2920,59 @@ function Onboarding({
             <small>items left</small>
           </span>
         </section>
+        <section className="surface cv-acquisition-card" id="cv-acquisition">
+          <span className="cv-icon">
+            <FileText size={20} />
+          </span>
+          <div>
+            <p className="eyebrow">Optional time saver</p>
+            <h2>Upload your CV to save time</h2>
+            <p>
+              We&apos;ll identify your education, training, and professional
+              experience so you don&apos;t have to enter everything manually.
+            </p>
+            <small>
+              Text-based PDF only · extracted locally · nothing is accepted
+              without your review
+            </small>
+          </div>
+          <label className="secondary-button cv-upload-button">
+            <Upload size={15} /> Upload CV
+            <input
+              hidden
+              type="file"
+              accept="application/pdf"
+              onChange={uploadCv}
+            />
+          </label>
+        </section>
+        {(p.extractedCandidates ?? []).some(
+          (candidate) => candidate.status === 'pending',
+        ) && (
+          <section className="surface panel candidate-review" id="cv-review">
+            <div className="panel-head">
+              <div>
+                <p className="eyebrow">Provider review required</p>
+                <h2>Review details found in your CV</h2>
+                <p>
+                  Accept, correct, or ignore each candidate. Extracted text is
+                  not primary-source verification.
+                </p>
+              </div>
+            </div>
+            <div className="candidate-list">
+              {(p.extractedCandidates ?? [])
+                .filter((candidate) => candidate.status === 'pending')
+                .map((candidate) => (
+                  <CvCandidateCard
+                    key={candidate.id}
+                    candidate={candidate}
+                    reviewCandidate={reviewCandidate}
+                  />
+                ))}
+            </div>
+          </section>
+        )}
         {activeSection === 'Resolve conflicts' && (
           <section
             key={activeSection}
@@ -2299,8 +2981,9 @@ function Onboarding({
             <p className="eyebrow">Confirm what is current</p>
             <h2>Resolve source conflicts</h2>
             <p className="panel-copy">
-              We found different values across public sources. Choose the value
-              that is accurate today—we will use it throughout your profile.
+              We found different values for the same canonical field across
+              demonstration records and confirmed documents. Choose what is
+              accurate today—we will preserve the earlier evidence.
             </p>
             <div className="conflict-list">
               {(p.dataConflicts ?? []).map((conflict) => (
@@ -2346,6 +3029,21 @@ function Onboarding({
                       );
                     })}
                   </div>
+                  {!conflict.resolvedAt && (
+                    <CustomConflictValue
+                      conflictId={conflict.id}
+                      resolveConflict={resolveConflict}
+                    />
+                  )}
+                  <details className="conflict-details">
+                    <summary>Review details</summary>
+                    <p>
+                      Compared only as{' '}
+                      <b>{conflict.context ?? 'the same canonical field'}</b>.
+                      Historical evidence is preserved after you choose the
+                      current value.
+                    </p>
+                  </details>
                 </article>
               ))}
             </div>
@@ -2581,10 +3279,17 @@ function Onboarding({
                   </div>
                 )}
                 {activeSection === 'Practice' && (
-                  <PracticeHistoryEditor
-                    histories={histories}
-                    updateHistories={updateHistories}
-                  />
+                  <div className="repeatable-history">
+                    <CareerTimeline
+                      entries={p.careerTimeline ?? []}
+                      gaps={p.careerGaps ?? []}
+                      explainGap={explainGap}
+                    />
+                    <PracticeHistoryEditor
+                      histories={histories}
+                      updateHistories={updateHistories}
+                    />
+                  </div>
                 )}
                 {activeSection === 'Affiliations' && (
                   <AffiliationHistoryEditor
@@ -2627,6 +3332,16 @@ function Onboarding({
               Upload demonstration documents only. Uploaded evidence is not
               automatically verified.
             </p>
+            <label className="upload cv-document-upload">
+              <FileText size={16} />
+              Upload CV and identify candidate facts
+              <input
+                hidden
+                type="file"
+                accept="application/pdf"
+                onChange={uploadCv}
+              />
+            </label>
             <label className="upload">
               <Upload size={16} />
               Upload license document
@@ -2668,6 +3383,198 @@ function Onboarding({
             <ArrowRight size={13} />
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function CvCandidateCard({
+  candidate,
+  reviewCandidate,
+}: {
+  candidate: ExtractedCandidate;
+  reviewCandidate: (
+    candidateId: string,
+    status: 'accepted' | 'ignored',
+    correctedValue?: string,
+  ) => void;
+}) {
+  const [value, setValue] = useState(candidate.value),
+    [editing, setEditing] = useState(false);
+  return (
+    <article className="candidate-card">
+      <div>
+        <span className="candidate-kind">{candidate.kind}</span>
+        <h3>{candidate.label}</h3>
+        {editing ? (
+          <input
+            className="input w-full"
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+            aria-label={`Correct ${candidate.label}`}
+          />
+        ) : (
+          <p>{value}</p>
+        )}
+        <small>
+          Extracted from uploaded CV · {candidate.confidence} confidence · not
+          verified
+        </small>
+      </div>
+      <div className="candidate-actions">
+        <button
+          type="button"
+          className="primary-button"
+          onClick={() => reviewCandidate(candidate.id, 'accepted', value)}
+        >
+          <Check size={13} /> Accept
+        </button>
+        <button
+          type="button"
+          className="secondary-button"
+          onClick={() => setEditing((current) => !current)}
+        >
+          {editing ? 'Use correction' : 'Correct'}
+        </button>
+        <button
+          type="button"
+          className="text-button"
+          onClick={() => reviewCandidate(candidate.id, 'ignored')}
+        >
+          Ignore
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function CustomConflictValue({
+  conflictId,
+  resolveConflict,
+}: {
+  conflictId: string;
+  resolveConflict: (
+    conflictId: string,
+    optionId: string,
+    customValue?: string,
+  ) => void;
+}) {
+  const [open, setOpen] = useState(false),
+    [value, setValue] = useState('');
+  if (!open)
+    return (
+      <button
+        type="button"
+        className="text-button enter-different"
+        onClick={() => setOpen(true)}
+      >
+        Enter a different value
+      </button>
+    );
+  return (
+    <div className="custom-conflict-value">
+      <input
+        className="input w-full"
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        placeholder="Enter the current value"
+      />
+      <button
+        type="button"
+        className="primary-button"
+        disabled={!value.trim()}
+        onClick={() =>
+          resolveConflict(conflictId, `${conflictId}-custom`, value)
+        }
+      >
+        Use this value
+      </button>
+    </div>
+  );
+}
+
+function CareerTimeline({
+  entries,
+  gaps,
+  explainGap,
+}: {
+  entries: CareerEntry[];
+  gaps: NonNullable<ManagedPractitioner['careerGaps']>;
+  explainGap: (gapId: string, explanation: string) => void;
+}) {
+  return (
+    <section className="career-timeline-card">
+      <div className="history-card-head">
+        <div>
+          <h3>Career timeline</h3>
+          <p>
+            Training and concurrent positions are shown together. Overlap is
+            allowed and is not treated as an error.
+          </p>
+        </div>
+      </div>
+      {entries.length ? (
+        <div className="career-timeline">
+          {[...entries]
+            .sort((a, b) => a.startDate.localeCompare(b.startDate))
+            .map((entry) => (
+              <article key={entry.id}>
+                <i />
+                <span>
+                  <b>{entry.title || entry.category}</b>
+                  <small>{entry.organization}</small>
+                  <em>
+                    {monthYear(entry.startDate)} –{' '}
+                    {entry.current ? 'Present' : monthYear(entry.endDate)}
+                  </em>
+                </span>
+              </article>
+            ))}
+        </div>
+      ) : (
+        <p className="timeline-empty">
+          Upload a CV or add practice history manually to build the timeline.
+        </p>
+      )}
+      {gaps
+        .filter((gap) => !gap.resolvedAt)
+        .map((gap) => (
+          <GapExplanation key={gap.id} gap={gap} explainGap={explainGap} />
+        ))}
+    </section>
+  );
+}
+
+function GapExplanation({
+  gap,
+  explainGap,
+}: {
+  gap: NonNullable<ManagedPractitioner['careerGaps']>[number];
+  explainGap: (gapId: string, explanation: string) => void;
+}) {
+  const [explanation, setExplanation] = useState('');
+  return (
+    <div className="gap-task">
+      <Clock3 size={17} />
+      <div>
+        <b>
+          We noticed a gap in your professional history between{' '}
+          {monthYear(gap.startDate)} and {monthYear(gap.endDate)}. Could you
+          briefly explain this period?
+        </b>
+        <textarea
+          value={explanation}
+          onChange={(event) => setExplanation(event.target.value)}
+          placeholder="For example: parental leave, relocation, or personal leave"
+        />
+        <button
+          type="button"
+          className="primary-button"
+          disabled={!explanation.trim()}
+          onClick={() => explainGap(gap.id, explanation)}
+        >
+          Save explanation
+        </button>
       </div>
     </div>
   );

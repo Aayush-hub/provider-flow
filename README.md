@@ -11,6 +11,8 @@ An independent, production-shaped concept prototype for provider onboarding and 
 - Independent provider-facing credentialing simulations, additional-information request/response flows, decisions, timelines, and audit history.
 - Supabase email/password authentication, cookie-based SSR sessions, private workspace persistence, private document uploads, PostgreSQL schema, RLS policies, seed data, and unit tests.
 
+The default configuration runs in **fictional demonstration mode**. It bypasses external healthcare APIs, provides six documented demo NPIs, parses text-based CV PDFs locally, and labels every simulated or document-extracted fact honestly. Set `NEXT_PUBLIC_DEMO_DATA_MODE=false` only when intentionally exercising the preserved live NPPES/CMS adapter.
+
 Authenticated workspace state and uploaded demonstration documents are persisted in the private `sharedcred-private` Supabase Storage bucket. Every server operation resolves the cookie-backed Supabase user before accessing the user-specific object path. The included normalized PostgreSQL migration remains the target model for a full relational rollout.
 
 ## Local setup
@@ -29,6 +31,7 @@ Supabase setup:
 2. Create a private Storage bucket named `sharedcred-private` with a 10 MB limit for JSON, PDF, DOCX, PNG, and JPG files.
 3. For the normalized relational model, run `supabase/migrations/001_initial_schema.sql`, then `supabase/seed.sql` in the Supabase SQL editor.
 4. Add `http://localhost:3000/auth/callback` and the production Vercel callback URL to Supabase Auth redirect URLs.
+5. Keep `NEXT_PUBLIC_DEMO_DATA_MODE=true` for the deterministic walkthrough documented in `DEMO_GUIDE.md`.
 
 ## Verification
 

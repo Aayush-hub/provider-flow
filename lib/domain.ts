@@ -58,6 +58,7 @@ export interface PractitionerLookup {
   taxonomies: Taxonomy[];
   nppes: SourceResult<{ factCount: number }>;
   cms: SourceResult<{ rows: ClinicianAffiliation[] }>;
+  demoScenario?: 'fresh' | 'returning' | 'conflict' | 'complex' | 'manual';
 }
 
 export type ProfileField =
@@ -85,6 +86,72 @@ export interface DataConflict {
   options: ConflictOption[];
   selectedOptionId?: string;
   resolvedAt?: string;
+  canonicalKey?: string;
+  context?: string;
+  historicalEvidence?: ConflictOption[];
+}
+
+export type CandidateStatus = 'pending' | 'accepted' | 'ignored';
+export type CandidateKind =
+  | 'identity'
+  | 'degree'
+  | 'education'
+  | 'training'
+  | 'employment'
+  | 'license';
+export interface ExtractedCandidate {
+  id: string;
+  canonicalKey: string;
+  kind: CandidateKind;
+  label: string;
+  value: string;
+  status: CandidateStatus;
+  confidence: 'high' | 'medium';
+  sourceDocumentId: string;
+  details?: Record<string, string | boolean>;
+}
+export interface CareerEntry {
+  id: string;
+  category: 'employment' | 'residency' | 'fellowship';
+  organization: string;
+  title: string;
+  address: string;
+  startDate: string;
+  endDate: string;
+  current: boolean;
+  source: string;
+}
+export interface CareerGap {
+  id: string;
+  startDate: string;
+  endDate: string;
+  explanation?: string;
+  resolvedAt?: string;
+}
+export interface FactProvenance {
+  id: string;
+  canonicalKey: string;
+  value: string;
+  source: string;
+  classification:
+    | 'demo_imported'
+    | 'document_extracted'
+    | 'manual_entry'
+    | 'provider_confirmed';
+  recordedAt: string;
+  sourceDocumentId?: string;
+}
+export interface AcquisitionEvent {
+  id: string;
+  type:
+    | 'demo_import'
+    | 'document_extraction'
+    | 'manual_entry'
+    | 'conflict_resolution'
+    | 'record_reuse';
+  canonicalKeys: string[];
+  source: string;
+  occurredAt: string;
 }
 
 export interface EducationHistory {
@@ -182,6 +249,11 @@ export interface DemoState {
   };
   histories?: ProviderHistories;
   dataConflicts?: DataConflict[];
+  extractedCandidates?: ExtractedCandidate[];
+  careerTimeline?: CareerEntry[];
+  careerGaps?: CareerGap[];
+  factProvenance?: FactProvenance[];
+  acquisitionEvents?: AcquisitionEvent[];
   submissions?: SubmissionSnapshot[];
   documents: {
     id: string;
@@ -190,6 +262,7 @@ export interface DemoState {
     status: string;
     storagePath?: string;
     size?: number;
+    extractionStatus?: 'not_requested' | 'pending_review' | 'confirmed';
   }[];
   attested: boolean;
   submittedAt?: string;
@@ -328,6 +401,11 @@ export function normalizePractitioner(
     ...practitioner,
     histories,
     dataConflicts: practitioner.dataConflicts ?? [],
+    extractedCandidates: practitioner.extractedCandidates ?? [],
+    careerTimeline: practitioner.careerTimeline ?? [],
+    careerGaps: practitioner.careerGaps ?? [],
+    factProvenance: practitioner.factProvenance ?? [],
+    acquisitionEvents: practitioner.acquisitionEvents ?? [],
     submissions,
   };
 }

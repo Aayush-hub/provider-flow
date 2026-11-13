@@ -1,4 +1,5 @@
 import { historiesFor, pendingOrganizationIds, type DemoState } from './domain';
+import { degreeMappings } from './field-mappings';
 
 export type OnboardingSection =
   | 'Resolve conflicts'
@@ -15,6 +16,8 @@ export function onboardingSectionForRequirement(
   category: string,
 ): OnboardingSection {
   if (category === 'Conflicts') return 'Resolve conflicts';
+  if (category === 'CV Review') return 'Documents';
+  if (category === 'Career History') return 'Practice';
   if (category === 'Licensure') return 'License';
   if (category === 'Identity') return 'Professional details';
 
@@ -106,6 +109,7 @@ export interface Requirement {
   satisfied: boolean;
   field?: keyof DemoState['profile'];
   documentType?: string;
+  canonicalKey?: string;
 }
 
 export function evaluateRequirements(
@@ -122,6 +126,7 @@ export function evaluateRequirements(
         category: 'Identity',
         organizationIds: selected,
         satisfied: Boolean(state.practitioner),
+        canonicalKey: 'identity.npi',
       },
       {
         id: 'degree',
@@ -130,6 +135,7 @@ export function evaluateRequirements(
         organizationIds: selected,
         field: 'degree',
         satisfied: Boolean(state.profile.degree),
+        canonicalKey: 'professional.degree',
       },
       {
         id: 'education',
@@ -142,6 +148,7 @@ export function evaluateRequirements(
           histories.education.every(
             (item) => item.institution && item.graduationYear,
           ),
+        canonicalKey: 'education.medical_school',
       },
       {
         id: 'license',
@@ -152,6 +159,7 @@ export function evaluateRequirements(
         satisfied:
           histories.licenses.length > 0 &&
           histories.licenses.every((item) => item.state && item.licenseNumber),
+        canonicalKey: 'license.active',
       },
       {
         id: 'practice',
@@ -162,6 +170,7 @@ export function evaluateRequirements(
         satisfied:
           histories.practices.every((item) => item.address) &&
           histories.practices.some((item) => item.current),
+        canonicalKey: 'practice.primary_address',
       },
       {
         id: 'license_document',
@@ -170,8 +179,41 @@ export function evaluateRequirements(
         organizationIds: selected,
         documentType: 'license',
         satisfied: state.documents.some((d) => d.type === 'license'),
+        canonicalKey: 'document.license',
       },
     ];
+  if (
+    state.profile.degree &&
+    degreeMappings(state.profile.degree, selected).length !== selected.length
+  )
+    shared.push({
+      id: 'degree_mapping_clarification',
+      label: 'Confirm how your degree should be represented',
+      category: 'Professional details',
+      organizationIds: selected,
+      satisfied: false,
+      canonicalKey: 'professional.degree_mapping',
+    });
+  if (
+    (state.extractedCandidates ?? []).some((item) => item.status === 'pending')
+  )
+    shared.unshift({
+      id: 'cv_candidate_review',
+      label: 'Review details extracted from your CV',
+      category: 'CV Review',
+      organizationIds: selected,
+      satisfied: false,
+      canonicalKey: 'cv.candidate_review',
+    });
+  if ((state.careerGaps ?? []).some((item) => !item.resolvedAt))
+    shared.unshift({
+      id: 'career_gap_explanation',
+      label: 'Explain the gap in your professional history',
+      category: 'Career History',
+      organizationIds: selected,
+      satisfied: false,
+      canonicalKey: 'career.gap_explanation',
+    });
   if (state.dataConflicts?.length) {
     shared.unshift({
       id: 'source_conflicts',
@@ -179,6 +221,7 @@ export function evaluateRequirements(
       category: 'Conflicts',
       organizationIds: selected,
       satisfied: state.dataConflicts.every((conflict) => conflict.resolvedAt),
+      canonicalKey: 'conflict.required_fact',
     });
   }
   if (selected.includes('evergreen')) {
@@ -192,6 +235,7 @@ export function evaluateRequirements(
         satisfied:
           histories.affiliations.length > 0 &&
           histories.affiliations.every((item) => item.hospital),
+        canonicalKey: 'affiliation.hospital',
       },
       {
         id: 'malpractice',
@@ -200,6 +244,7 @@ export function evaluateRequirements(
         organizationIds: ['evergreen'],
         field: 'malpracticeCarrier',
         satisfied: Boolean(state.profile.malpracticeCarrier),
+        canonicalKey: 'coverage.malpractice',
       },
       {
         id: 'disclosure',
@@ -208,6 +253,7 @@ export function evaluateRequirements(
         organizationIds: ['evergreen'],
         field: 'disclosure',
         satisfied: Boolean(state.profile.disclosure),
+        canonicalKey: 'disclosure.evergreen',
       },
     );
   }
@@ -221,6 +267,7 @@ export function evaluateRequirements(
         histories.practices.every((item) => item.address) &&
         histories.practices.some((item) => item.current),
       field: 'practiceAddress',
+      canonicalKey: 'practice.billing_address',
     });
   return shared;
 }

@@ -12,6 +12,11 @@
 - [x] Provider-facing source conflict resolution with provenance
 - [x] Repeatable education, license, practice, and affiliation histories
 - [x] Incremental organization submission with immutable snapshots
+- [x] Offline fictional demo acquisition mode with six deterministic NPI scenarios
+- [x] Local text-based PDF CV extraction with provider candidate review
+- [x] Career timeline, concurrent employment, and deterministic gap detection
+- [x] Versioned canonical degree mappings across fictional organizations
+- [x] Next-best-action guidance and calculated acquisition impact
 - [x] Independent credentialing cases and timelines
 - [x] Reviewer information request and provider response loop
 - [x] Authorized status transitions and simulated decisions
@@ -19,5 +24,6 @@
 - [x] Supabase schema, private Storage, seed, and RLS
 - [x] Unit tests and production build
 - [x] Wire authentication, workspace persistence, and document uploads to the configured Supabase project
-- [ ] Optional PDF/DOCX extraction and OCR provider
+- [x] Text-based PDF extraction (local processing; no OCR or external AI)
+- [ ] Scanned-image OCR and DOCX extraction
 - [ ] Full recredentialing UI (schema and history model included)

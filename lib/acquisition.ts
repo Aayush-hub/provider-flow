@@ -10,6 +10,8 @@ function makeConflict(
   label: string,
   explanation: string,
   values: { value?: string; source: string; retrievedAt: string }[],
+  canonicalKey?: string,
+  context?: string,
 ): DataConflict | null {
   const unique = values
     .filter(
@@ -28,6 +30,8 @@ function makeConflict(
     fieldKey,
     label,
     explanation,
+    canonicalKey,
+    context,
     options: unique.map((item, index) => ({
       id: `${id}-${index + 1}`,
       ...item,
@@ -50,7 +54,7 @@ export function conflictsFromLookup(
         'practice-address-source-conflict',
         'practiceAddress',
         'Primary practice address',
-        'NPPES and CMS report different addresses. Choose the address that is current.',
+        'The available demonstration records report different addresses. Choose the address that is current.',
         [
           {
             value: nppesAddress,
@@ -63,6 +67,8 @@ export function conflictsFromLookup(
             retrievedAt: lookup.cms.retrievedAt,
           })),
         ],
+        'practice.primary_address',
+        'primary_practice',
       ),
       makeConflict(
         'education-source-conflict',
@@ -74,6 +80,8 @@ export function conflictsFromLookup(
           source: lookup.cms.source,
           retrievedAt: lookup.cms.retrievedAt,
         })),
+        'education.medical_school',
+        'medical_education',
       ),
     ];
   return conflicts.filter((item): item is DataConflict => Boolean(item));
