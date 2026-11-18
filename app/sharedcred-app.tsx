@@ -50,7 +50,7 @@ import {
   type OnboardingSection,
 } from '@/lib/requirements';
 import { isValidNpi } from '@/lib/npi';
-import { DEMO_DATA_MODE, demoNpis } from '@/lib/demo-data';
+import { DEMO_DATA_MODE, demoNpis, isDemoNpi } from '@/lib/demo-data';
 import { detectCareerGaps, monthYear } from '@/lib/career';
 import { acquisitionImpact, nextBestAction } from '@/lib/acquisition-insights';
 import { organizationName } from '@/lib/field-mappings';
@@ -1088,7 +1088,8 @@ function PractitionerWizard({
 
   async function validateNpi() {
     setError('');
-    if (!/^\d{10}$/.test(npi) || (!DEMO_DATA_MODE && !isValidNpi(npi))) {
+    const usesDemoFixture = DEMO_DATA_MODE && isDemoNpi(npi);
+    if (!/^\d{10}$/.test(npi) || (!usesDemoFixture && !isValidNpi(npi))) {
       setError('Enter a valid 10-digit individual NPI.');
       return;
     }
@@ -1103,7 +1104,10 @@ function PractitionerWizard({
         | PractitionerLookup
         | { error: string; kind?: string };
       if (!response.ok || 'error' in body) {
-        if ('kind' in body && body.kind === 'no_demo_match')
+        if (
+          'kind' in body &&
+          (body.kind === 'no_demo_match' || body.kind === 'no_registry_match')
+        )
           setManualAvailable(true);
         throw new Error('error' in body ? body.error : 'Lookup failed');
       }

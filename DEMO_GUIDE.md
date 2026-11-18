@@ -1,6 +1,6 @@
 # Demo guide
 
-Use synthetic private data and demonstration documents only. Keep `NEXT_PUBLIC_DEMO_DATA_MODE=true` for this walkthrough. In that mode CertifyOS never sends an NPI to NPPES, CMS, CAQH, NPDB, or an AI service.
+Use synthetic private data and demonstration documents for the scripted walkthrough. Keep `NEXT_PUBLIC_DEMO_DATA_MODE=true` to enable the six identifiers below. CertifyOS never sends those documented fictional identifiers to NPPES, CMS, CAQH, NPDB, or an AI service. Any other checksum-valid NPI uses the live NPPES/CMS path, so use real identifiers only when intentionally testing live public acquisition.
 
 ## Fictional demonstration identifiers
 
@@ -71,6 +71,7 @@ The existing Overview displays one deterministic **Your next step** card and a s
 | Capability | Mode |
 | --- | --- |
 | Fictional NPI acquisition | Deterministic local dataset; no healthcare API call |
+| Other checksum-valid NPIs | Live server-side NPPES lookup with optional CMS enrichment |
 | Text-based CV extraction | Actual uploaded PDF text parsed locally |
 | Extracted candidate review | Provider-controlled; not primary-source verified |
 | Organizations and requirements | Fictional persisted configuration model |

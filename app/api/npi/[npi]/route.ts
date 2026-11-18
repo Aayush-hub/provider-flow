@@ -6,7 +6,12 @@ import type {
   PractitionerLookup,
   Taxonomy,
 } from '@/lib/domain';
-import { DEMO_DATA_MODE, demoLookup, demoNpis } from '@/lib/demo-data';
+import {
+  DEMO_DATA_MODE,
+  demoLookup,
+  demoNpis,
+  isDemoNpi,
+} from '@/lib/demo-data';
 
 type NppesResult = {
   number: number;
@@ -66,7 +71,7 @@ export async function GET(
   context: { params: Promise<{ npi: string }> },
 ) {
   const { npi } = await context.params;
-  if (DEMO_DATA_MODE) {
+  if (DEMO_DATA_MODE && isDemoNpi(npi)) {
     if (!/^\d{10}$/.test(npi))
       return NextResponse.json(
         { error: 'Enter a 10-digit demonstration NPI.' },
@@ -120,6 +125,7 @@ export async function GET(
           error:
             payload.Errors?.[0]?.description ??
             'No public NPI record was found.',
+          kind: 'no_registry_match',
         },
         { status: 404 },
       );

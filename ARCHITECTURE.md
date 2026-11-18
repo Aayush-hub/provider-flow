@@ -12,7 +12,7 @@ The provider workspace mirrors these production concepts in its persisted JSON c
 
 ## Acquisition adapters
 
-`NEXT_PUBLIC_DEMO_DATA_MODE` defaults to `true`. In this mode the NPI route uses only the fictional dataset in `lib/demo-data.ts`; it never calls NPPES, CMS, CAQH, NPDB, or an AI service. Unknown demonstration identifiers return a manual-entry option instead of a fabricated match. The live NPPES/CMS adapter remains available only when demo mode is explicitly disabled.
+`NEXT_PUBLIC_DEMO_DATA_MODE` defaults to `true` and enables only the six explicitly documented fictional identifiers in `lib/demo-data.ts`. Those identifiers never call NPPES, CMS, CAQH, NPDB, or an AI service. Every other checksum-valid NPI is routed to live NPPES and optional CMS enrichment. Set the flag to `false` to disable fictional fixtures entirely. Both a fictional no-match scenario and a genuine registry no-match offer manual entry without fabricating a provider record.
 
 Text-based CV PDFs are read server-side with the serverless PDF.js build supplied by `unpdf`. Deterministic parsing emits candidate facts rather than profile facts. The provider must accept, correct, or ignore every candidate before submission. Confirmed values retain the provenance label `Extracted from uploaded CV — Provider Confirmed` and are never classified as primary-source verified.
 
